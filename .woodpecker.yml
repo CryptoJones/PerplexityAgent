@@ -1,0 +1,14 @@
+# Codeberg CI (Woodpecker) — lint, test, and dependency audit.
+# Mirrors .github/workflows/ci.yml so both hosts run the same checks.
+when:
+  - event: [push, pull_request]
+
+steps:
+  test:
+    image: python:3.11-slim
+    commands:
+      - pip install --no-cache-dir uv
+      - uv sync --extra dev
+      - uv run ruff check .
+      - uv run pytest -q
+      - uv run pip-audit
