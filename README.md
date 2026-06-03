@@ -87,6 +87,154 @@ PERPLEXITY_HTTP_AUTH_TOKEN="$(openssl rand -hex 32)" uv run perplexity-agent --t
 Clients must send `Authorization: Bearer <token>`. Terminate TLS in front of it
 (reverse proxy) and keep it behind a filtering egress proxy.
 
+## Calling the tools
+
+Once the server is registered, the agent calls these tools automatically. The
+signatures, sample arguments, and return shapes are below.
+
+### `perplexity_search`
+
+Ranked web results from the Search API.
+
+| Param | Type | Default | Bounds |
+| --- | --- | --- | --- |
+| `query` | string | — (required) | 1–4096 chars |
+| `max_results` | int | `5` | 1–20 |
+| `max_tokens_per_page` | int | `1024` | 128–4096 |
+
+```json
+{ "query": "latest CRISPR base-editing clinical trials", "max_results": 8 }
+```
+
+Returns the raw Search API payload, e.g.:
+
+```json
+{
+  "results": [
+    { "title": "…", "url": "https://…", "snippet": "…" }
+  ]
+}
+```
+
+### `sonar_ask`
+
+A grounded answer from Sonar (OpenAI-compatible chat completion).
+
+| Param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `question` | string | — (required) | 1–4096 chars |
+| `model` | string | `"sonar"` | `"sonar"` or `"sonar-pro"` only |
+| `system_prompt` | string | `null` | optional, ≤ 4096 chars |
+
+```json
+{
+  "question": "What changed in the EU AI Act's 2026 enforcement timeline?",
+  "model": "sonar-pro",
+  "system_prompt": "Answer concisely and cite sources."
+}
+```
+
+Returns the chat-completion payload; the answer is at
+`choices[0].message.content`, with citations in the response metadata.
+
+### `deep_research`
+
+The full pipeline: decompose → search each sub-question → dedupe → synthesize
+(JSON schema) → validate citations.
+
+| Param | Type | Default | Bounds |
+| --- | --- | --- | --- |
+| `question` | string | — (required) | 1–4096 chars |
+| `num_subquestions` | int | `4` | 1–8 |
+| `model` | string | `"sonar-pro"` | `"sonar"` or `"sonar-pro"` |
+| `max_results_per_subquestion` | int | `5` | 1–10 |
+
+```json
+{ "question": "Is small modular nuclear cost-competitive with grid-scale solar?", "num_subquestions": 5 }
+```
+
+Returns a structured, **citation-validated** report:
+
+```json
+{
+  "question": "…",
+  "subquestions": ["…", "…"],
+  "sources": [{ "title": "…", "url": "https://…", "snippet": "…" }],
+  "report": {
+    "answer": "…",
+    "key_findings": ["…"],
+    "open_questions": ["…"],
+    "claims": [
+      { "claim": "…", "supporting_urls": ["https://…"], "confidence": "high" }
+    ]
+  },
+  "validation_report": {
+    "total_claims": 6,
+    "all_claims_supported": true,
+    "all_urls_known": true,
+    "passed": true,
+    "flagged": []
+  },
+  "security_flags": { "possible_prompt_injection_patterns": [] }
+}
+```
+
+A claim whose URL was never seen in retrieval is downgraded to `low` confidence
+and listed in `validation_report.flagged` — `passed` is `false` if any claim is
+unsupported or cites an unknown URL.
+
+### From a Claude Code / agent prompt
+
+You don't construct the JSON yourself — just ask, and the model picks the tool:
+
+```
+> Use deep_research to assess whether small modular reactors are cost-competitive
+  with grid-scale solar, then summarize only the high-confidence claims.
+```
+
+### From a raw MCP client (stdio, for testing)
+
+Any MCP client works. Using the Python SDK that ships with this project:
+
+```python
+import asyncio
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+async def main():
+    params = StdioServerParameters(
+        command="uv",
+        args=["--directory", "/abs/path/to/PerplexityAgent", "run", "perplexity-agent"],
+        env={"PERPLEXITY_API_KEY": "pplx-..."},
+    )
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            print([t.name for t in (await session.list_tools()).tools])
+            result = await session.call_tool(
+                "perplexity_search", {"query": "what is MCP", "max_results": 3}
+            )
+            print(result.content)
+
+asyncio.run(main())
+```
+
+You can also explore the tools interactively with the
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector):
+
+```bash
+npx @modelcontextprotocol/inspector uv run perplexity-agent
+```
+
+### Over the HTTP transport
+
+With the server started via `--transport http`, point any streamable-HTTP MCP
+client at `http://127.0.0.1:8080/mcp` and send the bearer token:
+
+```
+Authorization: Bearer <PERPLEXITY_HTTP_AUTH_TOKEN>
+```
+
 ## Configuration
 
 All optional knobs are environment variables (see [`.env.example`](.env.example)):
