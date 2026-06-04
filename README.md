@@ -247,6 +247,7 @@ audit-log path.
 uv sync --extra dev
 uv run pytest          # unit tests (no live API needed; httpx is mocked)
 uv run ruff check .    # lint
+uv run mypy src        # type check (strict)
 uv run pip-audit       # dependency vulnerability scan
 ```
 
