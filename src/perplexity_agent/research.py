@@ -50,8 +50,6 @@ def _extract_report(chat_response: dict[str, Any]) -> dict[str, Any]:
         content = chat_response["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError(f"Unexpected Sonar response shape: {exc}") from exc
-    if isinstance(content, dict):
-        return content
     try:
         return json.loads(content)
     except (json.JSONDecodeError, TypeError) as exc:
