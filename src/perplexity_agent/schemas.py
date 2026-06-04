@@ -8,6 +8,7 @@ parameters). Oversized, malformed, or missing fields are rejected early.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -47,7 +48,7 @@ class DeepResearchInput(_StrictModel):
     max_results_per_subquestion: int = Field(default=5, ge=1, le=10)
 
 
-def research_report_schema() -> dict:
+def research_report_schema() -> dict[str, Any]:
     """JSON schema handed to Sonar via ``response_format`` for structured output.
 
     Mirrors the reference architecture: an answer plus key findings, open

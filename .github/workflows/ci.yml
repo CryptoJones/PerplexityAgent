@@ -20,6 +20,8 @@ jobs:
         run: uv sync --extra dev --python ${{ matrix.python-version }}
       - name: Lint
         run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy src
       - name: Test
         run: uv run pytest -q
       - name: Audit dependencies

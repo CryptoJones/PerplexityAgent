@@ -51,9 +51,10 @@ def _extract_report(chat_response: dict[str, Any]) -> dict[str, Any]:
     except (KeyError, IndexError, TypeError) as exc:
         raise ValueError(f"Unexpected Sonar response shape: {exc}") from exc
     try:
-        return json.loads(content)
+        report: dict[str, Any] = json.loads(content)
     except (json.JSONDecodeError, TypeError) as exc:
         raise ValueError(f"Sonar did not return valid JSON: {exc}") from exc
+    return report
 
 
 def _citation_urls(chat_response: dict[str, Any]) -> list[str]:

@@ -87,7 +87,8 @@ class PerplexityClient:
                             f"{resp.text[:500]}"
                         )
                     self._enforce_size(resp)
-                    return resp.json()
+                    data: dict[str, Any] = resp.json()
+                    return data
 
             # Backoff with full jitter before the next attempt.
             sleep_s = min(2 ** attempt, 8) * (0.5 + random.random() / 2)  # noqa: S311 - not crypto
