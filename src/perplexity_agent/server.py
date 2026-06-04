@@ -8,6 +8,7 @@ then emit a redacted audit record (NSA: validate parameters, DoS guard, logging)
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -27,7 +28,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
     bucket = TokenBucket(settings.rate_per_minute, settings.rate_burst)
 
     @asynccontextmanager
-    async def lifespan(_server: FastMCP):
+    async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         client = PerplexityClient(settings)
         try:
             yield {"client": client}
@@ -47,7 +48,8 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
     )
 
     def _client(ctx: Context) -> PerplexityClient:
-        return ctx.request_context.lifespan_context["client"]
+        client: PerplexityClient = ctx.request_context.lifespan_context["client"]
+        return client
 
     def _guard(tool: str, params: dict[str, Any]) -> None:
         """Rate-limit and audit the start of a tool call (params redacted)."""

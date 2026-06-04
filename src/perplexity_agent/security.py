@@ -16,6 +16,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger("perplexity_agent.audit")
 
@@ -38,7 +39,7 @@ _INJECTION_PATTERNS = [
 def redact(value: object) -> object:
     """Recursively redact secret-looking values for safe logging."""
     if isinstance(value, dict):
-        out: dict = {}
+        out: dict[Any, Any] = {}
         for k, v in value.items():
             if isinstance(k, str) and any(h in k.lower() for h in _SECRET_KEY_HINTS):
                 out[k] = "***REDACTED***"

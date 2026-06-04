@@ -9,13 +9,16 @@ bearer token and binds to localhost by default.
 from __future__ import annotations
 
 import argparse
+import hmac
 import sys
 
-from .config import load_settings
+from mcp.server.fastmcp import FastMCP
+
+from .config import Settings, load_settings
 from .server import build_server
 
 
-def _run_http(mcp, settings) -> None:
+def _run_http(mcp: FastMCP, settings: Settings) -> None:
     """Run the streamable-HTTP transport behind mandatory bearer-token auth."""
     if not settings.http_auth_token:
         sys.exit(
@@ -27,7 +30,7 @@ def _run_http(mcp, settings) -> None:
     from starlette.responses import JSONResponse
     from starlette.types import ASGIApp, Receive, Scope, Send
 
-    expected = f"Bearer {settings.http_auth_token.get_secret_value()}"
+    expected = b"Bearer " + settings.http_auth_token.get_secret_value().encode()
 
     class BearerAuthMiddleware:
         """Reject any request without the exact expected bearer token."""
@@ -40,8 +43,11 @@ def _run_http(mcp, settings) -> None:
                 await self.app(scope, receive, send)
                 return
             headers = dict(scope.get("headers") or [])
-            provided = headers.get(b"authorization", b"").decode()
-            if provided != expected:
+            provided = headers.get(b"authorization", b"")
+            # Constant-time compare: a plain `!=` short-circuits on the first
+            # differing byte, leaking the token's length/prefix via timing. Compare
+            # raw bytes so a non-ASCII header can't raise instead of returning 401.
+            if not hmac.compare_digest(provided, expected):
                 resp = JSONResponse({"error": "unauthorized"}, status_code=401)
                 await resp(scope, receive, send)
                 return
