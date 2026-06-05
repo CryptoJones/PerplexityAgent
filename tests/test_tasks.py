@@ -27,9 +27,14 @@ async def test_run_once_notifies_on_first_then_change():
     mgr = TaskManager(assistant, _FakeFetcher(), msgs.append)
     task = MonitorTask(id=1, kind="search", target="widgets", interval_s=999)
 
-    assert await mgr.run_once(task) is False  # first run: baseline
-    assert await mgr.run_once(task) is False  # unchanged
-    assert await mgr.run_once(task) is True  # changed
+    # Assign before asserting: an `assert <call>` is dropped under `python -O`,
+    # which would silently skip the probe. Keep the side effect out of assert.
+    first = await mgr.run_once(task)
+    second = await mgr.run_once(task)
+    third = await mgr.run_once(task)
+    assert first is False  # first run: baseline
+    assert second is False  # unchanged
+    assert third is True  # changed
     assert task.runs == 3
     assert any("watching" in m for m in msgs)
     assert any("changed" in m for m in msgs)
@@ -40,6 +45,8 @@ async def test_add_and_remove_tracks_tasks():
     mgr = TaskManager(assistant, _FakeFetcher(), lambda _m: None)
     task = mgr.add("search", "widgets", 999)
     assert task.id in {t.id for t in mgr.list()}
-    assert mgr.remove(task.id) is True
-    assert mgr.remove(task.id) is False
+    removed = mgr.remove(task.id)
+    removed_again = mgr.remove(task.id)
+    assert removed is True
+    assert removed_again is False
     await mgr.aclose()
