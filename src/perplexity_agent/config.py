@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     http_host: str = "127.0.0.1"
     http_port: int = Field(default=8080, gt=0, le=65535)
 
+    # --- Interactive TUI: page fetcher + local store (used only by `tui`) ---
+    # The fetcher is the only egress path other than api.perplexity.ai. It is
+    # reachable solely from the interactive TUI, never via the MCP tools. SSRF
+    # controls live in fetch.py; these knobs tune them. Private/loopback/link-local
+    # targets are denied by default (fetch_allow_private=False).
+    fetch_user_agent: str = "PerplexityAgent-TUI/0.1 (+https://codeberg.org/CryptoJones/PerplexityAgent)"
+    fetch_allow_private: bool = False
+    # Where the TUI keeps its sqlite store (history, tabs, spaces, facts). None ->
+    # an XDG-style default under the user's data dir, resolved in memory.py.
+    store_path: str | None = None
+
 
 def load_settings() -> Settings:
     """Load and validate settings, raising a clear error if the key is missing."""

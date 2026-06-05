@@ -1,0 +1,10 @@
+name: "PerplexityAgent CodeQL config"
+
+# SAST targets the shipped package only. Test files contain deliberate edge-case
+# patterns (substring URL assertions, mixed import styles) that are benign in test
+# context but generate noise; analyzing src/ keeps findings actionable.
+paths:
+  - src
+
+paths-ignore:
+  - tests

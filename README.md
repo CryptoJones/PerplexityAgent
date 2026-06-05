@@ -235,16 +235,51 @@ client at `http://127.0.0.1:8080/mcp` and send the bearer token:
 Authorization: Bearer <PERPLEXITY_HTTP_AUTH_TOKEN>
 ```
 
+## Comet-style TUI (`perplexity-agent tui`)
+
+An optional interactive terminal app that brings the spirit of Perplexity's
+[Comet](https://www.perplexity.ai/comet/) browser to the terminal, backed by the
+same Search / Sonar / deep-research client. A terminal can't render web pages, drive
+a real browser (clicking, booking, buying), or do voice — those are out of scope by
+physics. Everything else maps onto terminal-feasible equivalents:
+
+| Comet feature | In the TUI |
+| --- | --- |
+| Assistant sidebar | A persistent chat pane (Sonar) that answers with your open "tabs" as context |
+| Answer-first search | `/search` — ranked results **plus** a grounded, cited answer |
+| Open / summarize a page | `/open <url>` — SSRF-guarded fetch → readable text → one-click summary |
+| Ask about / translate a page | `/ask <q>`, `/translate <lang>` on the current page |
+| Chat with your tabs / synthesis | `/summary` across all open tabs; bare chat is tab-aware |
+| AI tab grouping | `/group` clusters open tabs into named groups |
+| Deep research | `/research <q>` runs the full validated, cited pipeline |
+| Memory & Spaces | Local SQLite store; `/space [name]` switches workspaces |
+| Background / scheduled tasks | `/task search\|fetch <seconds> <target>` monitors and alerts on change; `/untask <id>` stops it |
+| Agentic task planning | Research-only planning (decompose a goal); **no real web actions** |
+
+Install the extra and launch it (needs `PERPLEXITY_API_KEY`, same as the server):
+
+```bash
+uv sync --extra tui
+uv run perplexity-agent tui
+```
+
+The page fetcher (`/open`) is the only egress path other than the Perplexity API and
+is reachable **only from the TUI**, never via the MCP tools. It is SSRF-hardened
+(scheme allowlist, private/loopback/link-local IPs rejected on every redirect hop,
+size/time caps) and flags fetched text for indirect prompt injection before it
+reaches Sonar. See [`SECURITY.md`](SECURITY.md). The MCP tool surface is unchanged.
+
 ## Configuration
 
 All optional knobs are environment variables (see [`.env.example`](.env.example)):
-timeouts, response-size cap, retry count, rate limits, and an optional JSON
-audit-log path.
+timeouts, response-size cap, retry count, rate limits, an optional JSON audit-log
+path, and (for the TUI) the fetch User-Agent, `PERPLEXITY_FETCH_ALLOW_PRIVATE`, and
+`PERPLEXITY_STORE_PATH`.
 
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra tui   # add --extra tui to exercise the TUI tests
 uv run pytest          # unit tests (no live API needed; httpx is mocked)
 uv run ruff check .    # lint
 uv run mypy src        # type check (strict)

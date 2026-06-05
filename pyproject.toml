@@ -21,10 +21,17 @@ dependencies = [
 dev = [
     "pytest>=9.0.0",
     "pytest-asyncio>=1.4.0",
+    "pytest-cov>=6.0.0",
     "respx>=0.23.1",
     "pip-audit>=2.10.0",
     "mypy>=1.9",
     "ruff>=0.9.0",
+]
+# Interactive terminal UI (`perplexity-agent tui`). Optional so the core MCP
+# server install stays lean; httpx is already a core dependency.
+tui = [
+    "textual>=0.80,<2.0.0",
+    "selectolax>=0.3,<0.4",
 ]
 
 [project.scripts]
@@ -45,6 +52,21 @@ packages = ["src/perplexity_agent"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
+[tool.coverage.run]
+branch = true
+source = ["perplexity_agent"]
+
+[tool.coverage.report]
+# CI gates on this. Entrypoint glue (__main__ HTTP wiring) is exercised manually,
+# not in unit tests, so the bar is set below 100% deliberately.
+fail_under = 85
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
@@ -56,6 +78,11 @@ strict = true
 [[tool.mypy.overrides]]
 module = "perplexity_agent.server"
 disallow_any_generics = false
+
+# selectolax (optional `tui` extra) ships no type stubs.
+[[tool.mypy.overrides]]
+module = "selectolax.*"
+ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100

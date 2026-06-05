@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Comet-style interactive TUI** (`perplexity-agent tui`, optional `tui` extra).
+  A Textual app that maps Perplexity Comet's browser features onto the terminal,
+  backed by the existing Search / Sonar / deep-research client: an assistant chat
+  sidebar, answer-first `/search`, page `/open` + `/summary` + `/ask` + `/translate`,
+  "chat with your tabs" cross-tab synthesis, AI `/group`ing, `/research`, local
+  Spaces/history (SQLite), and background `/task` monitors. Out of scope by physics:
+  voice and real web actions (clicking/booking/buying).
+- An **SSRF-hardened page fetcher** (`fetch.py`) backing `/open`: scheme allowlist,
+  private/loopback/link-local IP rejection re-checked on every redirect hop,
+  size/time caps, and indirect-prompt-injection flagging. Reachable only from the
+  TUI, never from an MCP tool — the tool surface is unchanged. See `SECURITY.md`.
+
 ### Security
 
 - The HTTP transport's bearer-token check is now constant-time
