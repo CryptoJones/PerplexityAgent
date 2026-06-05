@@ -25,13 +25,13 @@ dev = [
     "respx>=0.23.1",
     "pip-audit>=2.10.0",
     "mypy>=1.9",
-    "ruff>=0.9.0",
+    "ruff>=0.15.16",
 ]
 # Interactive terminal UI (`perplexity-agent tui`). Optional so the core MCP
 # server install stays lean; httpx is already a core dependency.
 tui = [
-    "textual>=0.80,<2.0.0",
-    "selectolax>=0.3,<0.4",
+    "textual>=8.2.7,<9.0.0",
+    "selectolax>=0.4.10,<0.5",
 ]
 
 [project.scripts]
