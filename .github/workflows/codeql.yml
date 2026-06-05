@@ -4,14 +4,13 @@ name: CodeQL
 # main and weekly, so new code paths and newly-disclosed query packs are caught.
 on:
   push:
-    # TEMP: feat/comet-tui-and-ci is here so CodeQL runs once before merge to
-    # validate the setup; revert to [main] only once results are confirmed.
-    branches: [main, feat/comet-tui-and-ci]
+    branches: [main]
   pull_request:
     branches: [main]
   schedule:
     # Mondays at 06:00 UTC.
     - cron: "0 6 * * 1"
+  # Manual trigger (validated a clean run on the feature branch before merge).
   workflow_dispatch:
 
 permissions:
