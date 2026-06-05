@@ -1,0 +1,26 @@
+# gitleaks configuration for PerplexityAgent.
+#
+# The repo contains NO real secrets: the Perplexity API key is loaded at runtime
+# from the environment as a pydantic SecretStr and never committed. The only
+# `pplx-...` strings in the tree are obvious placeholders (`.env.example`, README)
+# and deterministic test fixtures. This config keeps the default ruleset and
+# allowlists those placeholders so the scan stays signal, not noise.
+
+title = "PerplexityAgent gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placeholder and test-only Perplexity keys; not real credentials."
+regexTarget = "match"
+regexes = [
+  '''pplx-x{4,}''',            # .env.example / README placeholders (pplx-xxxx…)
+  '''pplx-testkey[0-9]+''',    # deterministic unit-test fixture key
+  '''pplx-dummy''',            # README / smoke-test key
+  '''pplx-\.{3}''',            # README "pplx-..." snippet
+]
+paths = [
+  '''\.env\.example$''',
+  '''\.gitleaks\.toml$''',
+]

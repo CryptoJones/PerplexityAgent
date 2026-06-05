@@ -4,25 +4,90 @@ on:
   push:
   pull_request:
 
+# Least privilege: jobs only need to read the repo. CodeQL (separate workflow)
+# requests the extra scopes it needs.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev --extra tui --python 3.12
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+
+  typecheck:
+    name: Type check (mypy strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev --extra tui --python 3.12
+      - name: mypy
+        run: uv run mypy src
+
   test:
+    name: Test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-      - name: Sync dependencies
-        run: uv sync --extra dev --python ${{ matrix.python-version }}
-      - name: Lint
-        run: uv run ruff check .
-      - name: Type check
-        run: uv run mypy src
-      - name: Test
-        run: uv run pytest -q
-      - name: Audit dependencies
+        with:
+          enable-cache: true
+      - run: uv python install ${{ matrix.python-version }}
+      # --extra tui is required: the TUI tests import textual/selectolax.
+      - run: uv sync --extra dev --extra tui --python ${{ matrix.python-version }}
+      - name: Pytest with coverage gate
+        run: >
+          uv run pytest -q
+          --cov=perplexity_agent
+          --cov-report=term-missing
+          --cov-report=xml
+      - name: Upload coverage report
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+
+  security:
+    name: Security (audit + secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev --extra tui --python 3.12
+      - name: Dependency vulnerability audit (pip-audit)
         run: uv run pip-audit
+      - name: Secret scan (gitleaks)
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" \
+            ghcr.io/gitleaks/gitleaks:latest \
+            detect --source /repo --no-git --redact --verbose

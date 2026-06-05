@@ -58,19 +58,40 @@ def _run_http(mcp: FastMCP, settings: Settings) -> None:
     uvicorn.run(app, host=settings.http_host, port=settings.http_port)
 
 
+def _run_tui(settings: Settings) -> None:
+    """Launch the interactive Comet-style TUI (needs the optional ``tui`` extra)."""
+    try:
+        from .tui import run_tui
+    except ImportError as exc:
+        sys.exit(
+            "The interactive TUI needs the optional 'tui' extra. Install it with:\n"
+            "    uv sync --extra tui   (or: pip install 'perplexity-agent[tui]')\n"
+            f"Underlying import error: {exc}"
+        )
+    run_tui(settings)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="perplexity-agent", description=__doc__)
+    # Backward-compatible: `perplexity-agent` and `perplexity-agent --transport ...`
+    # still run the MCP server. A `tui` subcommand launches the interactive UI.
     parser.add_argument(
         "--transport",
         choices=["stdio", "http"],
         default="stdio",
         help="MCP transport (default: stdio). 'http' requires PERPLEXITY_HTTP_AUTH_TOKEN.",
     )
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("tui", help="Launch the interactive Comet-style terminal UI.")
     args = parser.parse_args()
 
     settings = load_settings()  # fail fast if the API key is missing
-    mcp, settings = build_server(settings)
 
+    if args.command == "tui":
+        _run_tui(settings)
+        return
+
+    mcp, settings = build_server(settings)
     if args.transport == "http":
         _run_http(mcp, settings)
     else:

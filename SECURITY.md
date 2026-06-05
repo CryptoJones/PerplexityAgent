@@ -22,7 +22,7 @@ operating-system account the server runs under.
 | NSA recommendation | How PerplexityAgent implements it |
 | --- | --- |
 | **Choose supported MCP projects** | Built on the official `mcp` Python SDK (FastMCP). Dependencies are pinned and fully locked in `uv.lock`. |
-| **Design for boundaries / least privilege** | Default **stdio** transport runs locally with no network exposure. No shell execution, no filesystem writes (except an optional, explicitly-configured audit-log path). Egress is only to `api.perplexity.ai`. The API key lives only in the client layer and is **never** returned by a tool. |
+| **Design for boundaries / least privilege** | Default **stdio** transport runs locally with no network exposure. No shell execution, no filesystem writes (except an optional, explicitly-configured audit-log path). Egress is only to `api.perplexity.ai`. The API key lives only in the client layer and is **never** returned by a tool. The MCP server's only egress is `api.perplexity.ai`; the optional TUI adds an SSRF-guarded page fetcher (see below) that is never reachable from a tool. |
 | **Validate parameters** | Every tool input is validated against a strict `pydantic` model (`schemas.py`) with bounded string lengths (≤ 4 KB), numeric ranges (`max_results` 1–20, `num_subquestions` 1–8), and a `model` enum. Unknown fields are rejected (`extra="forbid"`), preventing parameter smuggling. |
 | **Constrain & sandbox tool execution** | Per-request timeouts, a hard response-size cap, and capped retries with jittered backoff (`client.py`). Run the process under seccomp/AppArmor/SELinux or in a container for OS-level isolation (see below). |
 | **Sign & verify messages (transport)** | stdio mode is local-trusted. The optional HTTP transport **refuses to start without a bearer token**, binds to localhost by default, and rejects any request lacking the exact `Authorization: Bearer <token>` header. Terminate TLS at a reverse proxy in front of it. |
@@ -31,6 +31,35 @@ operating-system account the server runs under.
 | **Track & patch vulnerabilities** | Pinned deps + `uv.lock`; CI runs `pip-audit` on every push. Enable Renovate/Dependabot on the GitHub mirror to automate updates. |
 | **DoS / fatigue resistance** | A token-bucket rate limiter (`rate_per_minute` / `rate_burst`), bounded sub-question counts, input-size caps, and request timeouts. |
 | **Access control / token security** | `PERPLEXITY_API_KEY` is loaded server-side from the environment only; the server fails fast if it is absent. No token passthrough. |
+
+## Interactive TUI page fetcher (added egress surface)
+
+The optional `perplexity-agent tui` (the `tui` extra) adds a **page fetcher**
+(`fetch.py`) so commands like `/open <url>` can pull a page into context — the only
+egress path other than `api.perplexity.ai`. It is reachable **only from the
+interactive TUI**, never from an MCP tool, so the agent-facing threat model and tool
+surface are unchanged. Because the fetched URL is attacker-influenceable, the
+fetcher applies SSRF + DoS controls mirroring the API client:
+
+- **Scheme allowlist** — only `http` / `https`; `file://`, `gopher://`, `data:` etc.
+  are rejected.
+- **Private-address rejection** — the host is resolved and the fetch is refused if
+  **any** resolved IP is private, loopback, link-local (incl. `169.254.169.254`
+  cloud metadata), multicast, reserved, or unspecified. This is re-checked on **every
+  redirect hop** (redirects are followed manually, not by httpx). Default-deny;
+  override only with `PERPLEXITY_FETCH_ALLOW_PRIVATE=true`.
+- **Size / time caps** — reuses `PERPLEXITY_TIMEOUT` and `PERPLEXITY_MAX_RESPONSE_BYTES`.
+- **Untrusted-output handling** — extracted page text is run through the same
+  indirect-prompt-injection scan as `deep_research`; matches are surfaced to the user
+  before the text is sent to Sonar.
+- **Audit** — fetches share the TUI's `TokenBucket` rate limiter and audit logger.
+
+**Residual risk:** a DNS-rebinding TOCTOU window exists between resolution and
+connect (we validate the resolved IPs, then connect by hostname for correct TLS).
+With `fetch_allow_private=False` the blast radius is "publicly routable internet
+only". Operators who fetch untrusted URLs should still run the TUI behind a filtering
+egress proxy. The TUI's local SQLite store (history/tabs/Spaces) holds only the
+user's own artifacts — no secrets.
 
 ## Secret handling
 
