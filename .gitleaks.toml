@@ -13,12 +13,15 @@ useDefault = true
 
 [allowlist]
 description = "Placeholder and test-only Perplexity keys; not real credentials."
-regexTarget = "match"
+# Match against the whole source line so allowlisting works regardless of which
+# substring a rule captures as the "secret".
+regexTarget = "line"
 regexes = [
   '''pplx-x{4,}''',            # .env.example / README placeholders (pplx-xxxx…)
   '''pplx-testkey[0-9]+''',    # deterministic unit-test fixture key
   '''pplx-dummy''',            # README / smoke-test key
   '''pplx-\.{3}''',            # README "pplx-..." snippet
+  '''pplx-[a-f0-9]{6,}''',     # hex fixtures in test_security.py (abcdef…, deadbeef…)
 ]
 paths = [
   '''\.env\.example$''',
