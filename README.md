@@ -298,3 +298,5 @@ uv run pip-audit       # dependency vulnerability scan
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
