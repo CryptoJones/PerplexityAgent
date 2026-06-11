@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- A lifecycle regression test: the stdio server must exit when the MCP client
+  closes the pipe, never linger deaf and silently discard requests (the
+  failure mode diagnosed in obsidian-mcp, omind#49). Verified the server
+  already behaves correctly; the test locks it in.
 
 ## [0.2.0] - 2026-06-10
 
