@@ -1,5 +1,11 @@
 # PerplexityAgent
 
+[![Release](https://img.shields.io/gitea/v/release/CryptoJones/PerplexityAgent?gitea_url=https%3A%2F%2Fcodeberg.org&label=release)](https://codeberg.org/CryptoJones/PerplexityAgent/releases)
+[![CI](https://github.com/CryptoJones/PerplexityAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/CryptoJones/PerplexityAgent/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/CryptoJones/PerplexityAgent/actions/workflows/codeql.yml/badge.svg)](https://github.com/CryptoJones/PerplexityAgent/actions/workflows/codeql.yml)
+[![Python ≥ 3.11](https://img.shields.io/badge/python-%E2%89%A5%203.11-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A simple, **security-hardened** [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP) server that gives AI agents — [Claude Code](https://claude.com/claude-code),
 Hermes, or any MCP client — access to the [Perplexity](https://docs.perplexity.ai)
