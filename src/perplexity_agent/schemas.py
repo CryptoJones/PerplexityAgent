@@ -46,6 +46,9 @@ class DeepResearchInput(_StrictModel):
     num_subquestions: int = Field(default=4, ge=1, le=8)
     model: SonarModel = SonarModel.sonar_pro
     max_results_per_subquestion: int = Field(default=5, ge=1, le=10)
+    # Opt-in: ask Sonar to decompose the question instead of the deterministic
+    # angle list (one extra model call; falls back to deterministic on failure).
+    use_model_decomposition: bool = False
 
 
 def research_report_schema() -> dict[str, Any]:

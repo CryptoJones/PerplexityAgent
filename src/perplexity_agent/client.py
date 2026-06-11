@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import random
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -20,15 +21,40 @@ from .config import Settings
 # Status codes worth retrying (transient): 429 + 5xx.
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
+# Ceiling on a server-supplied Retry-After so a hostile/buggy header can't stall us.
+_MAX_RETRY_AFTER_S = 30.0
+
+
+def _retry_after_seconds(resp: httpx.Response) -> float | None:
+    """Parse a numeric ``Retry-After`` header (seconds form), capped; None if unusable."""
+    value = resp.headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:  # HTTP-date form — fall back to our own backoff
+        return None
+    return min(max(seconds, 0.0), _MAX_RETRY_AFTER_S)
+
 
 class PerplexityError(RuntimeError):
     """Raised for non-retryable or exhausted-retry API failures."""
 
 
 def canonical_url(url: str) -> str:
-    """Normalize a URL for dedup: drop fragment, trailing slash, lowercase host part."""
+    """Normalize a URL for dedup: drop fragment + trailing slash, lowercase scheme/host.
+
+    Path and query keep their case — they are case-sensitive on most servers, so
+    lowercasing them would falsely merge distinct pages (and falsely pass/fail
+    citation validation).
+    """
     base = (url or "").split("#", 1)[0].rstrip("/")
-    return base.lower()
+    if not base:
+        return ""
+    parts = urlsplit(base)
+    if not parts.scheme:
+        return base.lower()  # not URL-shaped; keep the old whole-string fold
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, ""))
 
 
 def dedupe_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -72,6 +98,7 @@ class PerplexityClient:
         """POST with retry/jitter and a hard response-size cap."""
         last_exc: Exception | None = None
         for attempt in range(self._settings.max_retries + 1):
+            retry_after: float | None = None
             try:
                 resp = await self._client.post(path, json=payload)
             except httpx.RequestError as exc:  # network/timeout — transient
@@ -79,6 +106,7 @@ class PerplexityClient:
             else:
                 if resp.status_code in _RETRYABLE_STATUS and attempt < self._settings.max_retries:
                     last_exc = PerplexityError(f"Transient HTTP {resp.status_code}")
+                    retry_after = _retry_after_seconds(resp)
                 else:
                     if resp.status_code >= 400:
                         # Surface a concise error without leaking request headers.
@@ -90,8 +118,11 @@ class PerplexityClient:
                     data: dict[str, Any] = resp.json()
                     return data
 
-            # Backoff with full jitter before the next attempt.
-            sleep_s = min(2 ** attempt, 8) * (0.5 + random.random() / 2)  # noqa: S311 - not crypto
+            # Honor a server-supplied Retry-After; otherwise back off with full jitter.
+            if retry_after is not None:
+                sleep_s = retry_after
+            else:
+                sleep_s = min(2 ** attempt, 8) * (0.5 + random.random() / 2)  # noqa: S311 - not crypto
             await asyncio.sleep(sleep_s)
 
         raise PerplexityError(

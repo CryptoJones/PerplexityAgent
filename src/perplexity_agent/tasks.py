@@ -21,6 +21,10 @@ from .security import content_hash
 Notify = Callable[[str], None]
 TaskKind = Literal["search", "fetch"]
 
+# A monitor survives transient failures (network blips, rate limits) but gives up
+# — loudly — after this many consecutive ones, rather than dying silently.
+_MAX_CONSECUTIVE_FAILURES = 5
+
 
 @dataclass
 class MonitorTask:
@@ -33,6 +37,7 @@ class MonitorTask:
     last_signature: str | None = None
     last_summary: str = ""
     runs: int = 0
+    failures: int = 0
     _handle: asyncio.Task[None] | None = field(default=None, repr=False, compare=False)
 
 
@@ -79,11 +84,38 @@ class TaskManager:
 
     async def _loop(self, task: MonitorTask) -> None:
         try:
-            while True:
-                await self.run_once(task)
+            while await self.step(task):
                 await asyncio.sleep(task.interval_s)
         except asyncio.CancelledError:  # pragma: no cover - cancellation path
             raise
+
+    async def step(self, task: MonitorTask) -> bool:
+        """One guarded check (the loop body). Returns False when the monitor should stop.
+
+        A failed probe (network error, rate limit, fetch refusal) notifies the user
+        and keeps the monitor alive; after ``_MAX_CONSECUTIVE_FAILURES`` in a row the
+        task announces it is giving up and removes itself.
+        """
+        try:
+            await self.run_once(task)
+        except asyncio.CancelledError:  # pragma: no cover - cancellation path
+            raise
+        except Exception as exc:  # noqa: BLE001 - any probe failure must not kill the loop
+            task.failures += 1
+            if task.failures >= _MAX_CONSECUTIVE_FAILURES:
+                self._tasks.pop(task.id, None)
+                self._notify(
+                    f"[task {task.id}] giving up on '{task.target}' after "
+                    f"{task.failures} consecutive failures: {exc}"
+                )
+                return False
+            self._notify(
+                f"[task {task.id}] check of '{task.target}' failed "
+                f"({task.failures}/{_MAX_CONSECUTIVE_FAILURES}): {exc}"
+            )
+            return True
+        task.failures = 0
+        return True
 
     async def run_once(self, task: MonitorTask) -> bool:
         """Run one check. Returns True if the result changed since last time.

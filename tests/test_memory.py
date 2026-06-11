@@ -39,6 +39,50 @@ def test_tabs_round_trip(tmp_path):
     s.close()
 
 
+def test_save_tab_dedupes_by_space_and_url(tmp_path):
+    s = _store(tmp_path)
+    s.save_tab(StoredTab("Old title", "https://x", "page", "old"), now=1.0)
+    s.save_tab(StoredTab("New title", "https://x", "page", "new"), now=2.0)
+    tabs = s.tabs()
+    assert len(tabs) == 1  # replaced, not accumulated
+    assert tabs[0].title == "New title"
+    assert tabs[0].text == "new"
+    # Same URL in a different space is its own tab.
+    s.save_tab(StoredTab("Work copy", "https://x", "page", "w"), now=3.0, space="work")
+    assert len(s.tabs(space="work")) == 1
+    assert len(s.tabs()) == 1
+    s.close()
+
+
+def test_tabs_retention_cap_per_space(tmp_path):
+    from perplexity_agent.memory import _MAX_TABS_PER_SPACE
+
+    s = _store(tmp_path)
+    for i in range(_MAX_TABS_PER_SPACE + 5):
+        s.save_tab(StoredTab(f"T{i}", f"https://x/{i}", "page", "b"), now=float(i))
+    tabs = s.tabs()
+    assert len(tabs) == _MAX_TABS_PER_SPACE
+    # The oldest tabs were pruned; the newest survive.
+    assert tabs[0].title == "T5"
+    assert tabs[-1].title == f"T{_MAX_TABS_PER_SPACE + 4}"
+    # Other spaces are untouched by the cap.
+    s.save_tab(StoredTab("W", "https://w", "page", "b"), now=999.0, space="work")
+    assert len(s.tabs(space="work")) == 1
+    s.close()
+
+
+def test_store_file_is_owner_only(tmp_path):
+    import os
+    import stat
+
+    if os.name == "nt":  # pragma: no cover - POSIX permissions only
+        return
+    s = _store(tmp_path)
+    mode = stat.S_IMODE(os.stat(tmp_path / "store.db").st_mode)
+    assert mode == 0o600
+    s.close()
+
+
 def test_spaces_and_facts(tmp_path):
     s = _store(tmp_path)
     s.create_space("research", now=1.0)

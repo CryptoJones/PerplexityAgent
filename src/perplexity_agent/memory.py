@@ -4,6 +4,11 @@ A dependency-free :mod:`sqlite3` store standing in for Comet's memory + Spaces. 
 lives under an XDG-style data directory by default (overridable via
 ``PERPLEXITY_STORE_PATH``) and holds only the user's own browsing/chat artifacts —
 no secrets. All writes go through parameterized queries.
+
+Hygiene: the database file is chmod'd to owner-only (0600) because it holds
+browsing history; tabs are deduplicated per ``(space, url)`` on save (re-opening a
+page replaces the stored copy instead of accumulating duplicates); and each space
+keeps at most the newest ``_MAX_TABS_PER_SPACE`` tabs so growth is bounded.
 """
 
 from __future__ import annotations
@@ -43,6 +48,10 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 """
 
+# Newest tabs kept per space; older ones are pruned on save so the store (which
+# holds up to ~80 KB of page text per tab) can't grow without bound.
+_MAX_TABS_PER_SPACE = 50
+
 
 def default_store_path() -> Path:
     """XDG-style default location for the store database."""
@@ -69,12 +78,16 @@ class Store:
 
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
-        if str(self._path) != ":memory:":
-            self._path.parent.mkdir(parents=True, exist_ok=True)
+        on_disk = str(self._path) != ":memory:"
+        if on_disk:
+            self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path))
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        if on_disk:
+            # Browsing history/page text: owner-only, like a browser profile.
+            self._path.chmod(0o600)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Store:
@@ -102,9 +115,19 @@ class Store:
 
     # --- tabs --------------------------------------------------------------
     def save_tab(self, tab: StoredTab, *, now: float, space: str = "default") -> None:
+        # Dedupe per (space, url): re-opening a page replaces the stored copy.
+        self._conn.execute(
+            "DELETE FROM tabs WHERE space = ? AND url = ?", (space, tab.url)
+        )
         self._conn.execute(
             "INSERT INTO tabs (space, title, url, kind, text, created) VALUES (?, ?, ?, ?, ?, ?)",
             (space, tab.title, tab.url, tab.kind, tab.text, now),
+        )
+        # Retention: keep only the newest _MAX_TABS_PER_SPACE tabs in this space.
+        self._conn.execute(
+            "DELETE FROM tabs WHERE space = ? AND id NOT IN ("
+            "SELECT id FROM tabs WHERE space = ? ORDER BY id DESC LIMIT ?)",
+            (space, space, _MAX_TABS_PER_SPACE),
         )
         self._conn.commit()
 

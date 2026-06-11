@@ -40,6 +40,53 @@ async def test_run_once_notifies_on_first_then_change():
     assert any("changed" in m for m in msgs)
 
 
+class _FlakyAssistant:
+    """search() raises ``failures`` times, then succeeds forever."""
+
+    def __init__(self, failures):
+        self._failures = failures
+
+    async def search(self, _query, max_results=5):
+        if self._failures > 0:
+            self._failures -= 1
+            raise RuntimeError("transient blip")
+        return [{"url": "https://a.com"}]
+
+
+async def test_step_survives_transient_failure():
+    msgs = []
+    mgr = TaskManager(_FlakyAssistant(failures=1), _FakeFetcher(), msgs.append)
+    task = mgr.add("search", "widgets", 999)
+    task._handle.cancel()  # drive step() manually instead of the background loop
+
+    keep_going = await mgr.step(task)
+    assert keep_going is True
+    assert task.failures == 1
+    assert any("failed" in m for m in msgs)
+
+    # Next probe succeeds: the failure counter resets and the watch stays alive.
+    keep_going = await mgr.step(task)
+    assert keep_going is True
+    assert task.failures == 0
+    mgr.remove(task.id)
+
+
+async def test_step_gives_up_after_consecutive_failures():
+    from perplexity_agent.tasks import _MAX_CONSECUTIVE_FAILURES
+
+    msgs = []
+    mgr = TaskManager(_FlakyAssistant(failures=99), _FakeFetcher(), msgs.append)
+    task = mgr.add("search", "widgets", 999)
+    task._handle.cancel()  # drive step() manually instead of the background loop
+
+    for _ in range(_MAX_CONSECUTIVE_FAILURES - 1):
+        assert await mgr.step(task) is True
+    assert await mgr.step(task) is False
+    # The dead watch announced itself and was removed from the listing.
+    assert any("giving up" in m for m in msgs)
+    assert mgr.list() == []
+
+
 async def test_add_and_remove_tracks_tasks():
     assistant = _FakeAssistant([[{"url": "https://a.com"}]])
     mgr = TaskManager(assistant, _FakeFetcher(), lambda _m: None)

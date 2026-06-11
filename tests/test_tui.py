@@ -75,7 +75,8 @@ async def test_open_creates_tab(tui_settings, monkeypatch):
     )
     app = CometApp(tui_settings)
     with respx.mock:
-        respx.get("https://example.com/").mock(
+        # The fetcher pins the connection to the resolved IP, so mock the IP URL.
+        respx.get("https://93.184.216.34/").mock(
             return_value=httpx.Response(200, html="<title>Example</title><p>Body text</p>")
         )
         respx.post("https://api.perplexity.ai/chat/completions").mock(
@@ -126,7 +127,7 @@ async def test_page_interaction_commands(tui_settings, monkeypatch):
     _patch_public_dns(monkeypatch)
     app = CometApp(tui_settings)
     with respx.mock:
-        respx.get("https://example.com/").mock(
+        respx.get("https://93.184.216.34/").mock(
             return_value=httpx.Response(200, html="<title>Doc</title><p>content</p>")
         )
         respx.post("https://api.perplexity.ai/chat/completions").mock(

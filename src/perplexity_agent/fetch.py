@@ -9,13 +9,14 @@ cap) and adds the controls a fetch of *attacker-influenceable* URLs needs:
 - DNS resolution + rejection of private / loopback / link-local / reserved IPs
   (NSA: constrain & sandbox) so a URL can't be used to reach internal services;
 - the same check on **every redirect hop** (redirects are followed manually);
-- a hard byte cap enforced while streaming the body;
+- the connection is **pinned to the validated IP** (the request goes to the IP,
+  with the original hostname sent as the ``Host`` header and TLS SNI) so a
+  DNS-rebinding flip between validation and connect cannot reach a different
+  address than the one that was checked;
+- a hard byte cap enforced while the body streams in — oversized responses are
+  aborted mid-download, never fully buffered;
 - extracted page text is treated as *untrusted input* and flagged for indirect
   prompt injection (``scan_for_injection``) before it is ever shown to Sonar.
-
-Residual risk: a classic DNS-rebinding TOCTOU window exists between validation and
-connect. It is documented in ``SECURITY.md``; ``fetch_allow_private`` stays ``False``
-by default so the blast radius is "public internet only".
 """
 
 from __future__ import annotations
@@ -23,7 +24,8 @@ from __future__ import annotations
 import ipaddress
 import socket
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -40,6 +42,19 @@ _MAX_TEXT_CHARS = 80_000
 
 # How many redirects we will follow before giving up.
 _MAX_REDIRECTS = 5
+
+# Non-text bodies (PDFs, images, archives …) would only decode to garbage and waste
+# the prompt budget; refuse them up front. A missing Content-Type is allowed —
+# plenty of legitimate servers omit it.
+_TEXTUAL_MIME_EXACT = frozenset({"application/xml", "application/json", "application/xhtml+xml"})
+
+
+def _is_textual_mime(mime: str) -> bool:
+    return (
+        mime.startswith("text/")
+        or mime in _TEXTUAL_MIME_EXACT
+        or mime.endswith(("+xml", "+json"))
+    )
 
 
 class FetchError(RuntimeError):
@@ -78,8 +93,13 @@ def _is_public_ip(raw: str) -> bool:
     return ip.is_global
 
 
-def _assert_host_allowed(host: str, *, allow_private: bool) -> None:
-    """Resolve ``host`` and raise unless every resolved IP is allowed."""
+def _assert_host_allowed(host: str, *, allow_private: bool) -> str:
+    """Resolve ``host``, raise unless every resolved IP is allowed, return one.
+
+    The returned address is the one the connection will be pinned to, so the IP
+    that was validated is exactly the IP that gets dialed (no re-resolution
+    window for DNS rebinding).
+    """
     if not host:
         raise FetchError("URL has no host.")
     try:
@@ -87,28 +107,47 @@ def _assert_host_allowed(host: str, *, allow_private: bool) -> None:
     except socket.gaierror as exc:
         raise FetchError(f"Could not resolve host {host!r}: {exc}") from exc
 
-    addrs = {str(info[4][0]) for info in infos}
+    # Ordered dedupe: getaddrinfo sorts by RFC 6724 preference; pin the first.
+    addrs = list(dict.fromkeys(str(info[4][0]) for info in infos))
     if not addrs:
         raise FetchError(f"Host {host!r} resolved to no addresses.")
-    if allow_private:
-        return
-    for addr in addrs:
-        if not _is_public_ip(addr):
-            raise FetchError(
-                f"Refusing to fetch {host!r}: resolves to non-public address "
-                f"{addr} (SSRF guard). Set PERPLEXITY_FETCH_ALLOW_PRIVATE=true to override."
-            )
+    if not allow_private:
+        for addr in addrs:
+            if not _is_public_ip(addr):
+                raise FetchError(
+                    f"Refusing to fetch {host!r}: resolves to non-public address "
+                    f"{addr} (SSRF guard). Set PERPLEXITY_FETCH_ALLOW_PRIVATE=true to override."
+                )
+    return addrs[0]
 
 
 def _validate_url(url: str, *, allow_private: bool) -> str:
-    """Validate scheme + host of ``url``; return the normalized URL."""
+    """Validate scheme + host of ``url``; return the validated IP to pin to."""
     parts = urlsplit(url)
     if parts.scheme.lower() not in _ALLOWED_SCHEMES:
         raise FetchError(
             f"Refusing to fetch scheme {parts.scheme!r}; only http/https are allowed."
         )
-    _assert_host_allowed(parts.hostname or "", allow_private=allow_private)
-    return url
+    return _assert_host_allowed(parts.hostname or "", allow_private=allow_private)
+
+
+def _pin_to_ip(url: str, ip: str) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Rewrite ``url`` to dial ``ip`` while presenting the original hostname.
+
+    Returns ``(pinned_url, headers, extensions)``: the URL with the host replaced
+    by the validated IP, a ``Host`` header carrying the original hostname, and the
+    ``sni_hostname`` extension so TLS handshakes (and certificate verification)
+    still use the hostname.
+    """
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    ip_netloc = f"[{ip}]" if ":" in ip else ip
+    host_header = host
+    if parts.port is not None:
+        ip_netloc += f":{parts.port}"
+        host_header += f":{parts.port}"
+    pinned = urlunsplit((parts.scheme, ip_netloc, parts.path, parts.query, ""))
+    return pinned, {"Host": host_header}, {"sni_hostname": host}
 
 
 def extract_text(html: str) -> tuple[str, str]:
@@ -175,42 +214,58 @@ class PageFetcher:
         """Fetch ``url`` (following safe redirects) and return cleaned page text."""
         allow_private = self._settings.fetch_allow_private
         requested = url
-        current = _validate_url(url, allow_private=allow_private)
+        current = url
 
-        resp: httpx.Response | None = None
         for _ in range(_MAX_REDIRECTS + 1):
-            resp = await self._client.get(current)
-            if resp.is_redirect and resp.has_redirect_location:
-                # Re-validate the redirect target before following it.
-                current = str(resp.url.join(resp.headers["location"]))
-                _validate_url(current, allow_private=allow_private)
-                continue
-            break
-        else:
-            raise FetchError(f"Too many redirects (>{_MAX_REDIRECTS}) fetching {requested!r}.")
+            # Validate every hop, then pin the connection to the validated IP.
+            ip = _validate_url(current, allow_private=allow_private)
+            pinned, headers, extensions = _pin_to_ip(current, ip)
+            async with self._client.stream(
+                "GET", pinned, headers=headers, extensions=extensions
+            ) as resp:
+                if resp.is_redirect and resp.has_redirect_location:
+                    # Join against the logical (hostname) URL, not the pinned one.
+                    current = str(httpx.URL(current).join(resp.headers["location"]))
+                    continue
+                if resp.status_code >= 400:
+                    raise FetchError(f"Fetch failed: HTTP {resp.status_code} for {current!r}.")
+                mime = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+                if mime and not _is_textual_mime(mime):
+                    raise FetchError(
+                        f"Refusing non-text content-type {mime!r} for {current!r}."
+                    )
+                body = await self._read_capped(resp)
 
-        if resp is None:  # pragma: no cover - the loop always assigns resp
-            raise FetchError(f"No response fetching {requested!r}.")
-        if resp.is_redirect:
-            raise FetchError(f"Too many redirects (>{_MAX_REDIRECTS}) fetching {requested!r}.")
-        if resp.status_code >= 400:
-            raise FetchError(f"Fetch failed: HTTP {resp.status_code} for {current!r}.")
-
-        body = resp.content
-        if len(body) > self._settings.max_response_bytes:
-            raise FetchError(
-                f"Page too large ({len(body)} bytes > {self._settings.max_response_bytes} "
-                "cap); rejected as a DoS guard."
+            html = body.decode(resp.charset_encoding or "utf-8", errors="replace")
+            title, text = extract_text(html)
+            flags = scan_for_injection(f"{title} {text}")
+            return FetchedPage(
+                requested_url=requested,
+                final_url=current,
+                title=title,
+                text=text,
+                fetched_bytes=len(body),
+                injection_flags=flags,
             )
 
-        html = resp.text
-        title, text = extract_text(html)
-        flags = scan_for_injection(f"{title} {text}")
-        return FetchedPage(
-            requested_url=requested,
-            final_url=str(resp.url),
-            title=title,
-            text=text,
-            fetched_bytes=len(body),
-            injection_flags=flags,
-        )
+        raise FetchError(f"Too many redirects (>{_MAX_REDIRECTS}) fetching {requested!r}.")
+
+    async def _read_capped(self, resp: httpx.Response) -> bytes:
+        """Read the body in chunks, aborting as soon as the size cap is exceeded."""
+        cap = self._settings.max_response_bytes
+        declared = resp.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > cap:
+            raise FetchError(
+                f"Page too large (Content-Length {declared} bytes > {cap} cap); "
+                "rejected as a DoS guard."
+            )
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in resp.aiter_bytes():
+            total += len(chunk)
+            if total > cap:
+                raise FetchError(
+                    f"Page too large (>{cap} bytes); download aborted as a DoS guard."
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)

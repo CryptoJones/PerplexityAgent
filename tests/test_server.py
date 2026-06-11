@@ -88,6 +88,46 @@ async def test_deep_research_tool_roundtrip():
     assert payload["report"]["answer"] == "answer"
 
 
+@respx.mock
+async def test_audit_correlates_call_and_result_with_latency():
+    import logging
+
+    class _Capture(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.events = []
+
+        def emit(self, record):
+            self.events.append(json.loads(record.getMessage()))
+
+    handler = _Capture()
+    audit_logger = logging.getLogger("perplexity_agent.audit")
+    audit_logger.addHandler(handler)
+    try:
+        respx.post("https://api.perplexity.ai/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+                },
+            )
+        )
+        mcp, _ = build_server(_settings())
+        async with connect(mcp._mcp_server) as client:
+            await client.call_tool("sonar_ask", {"question": "why?"})
+    finally:
+        audit_logger.removeHandler(handler)
+
+    calls = [e for e in handler.events if e["event"] == "tool_call"]
+    results = [e for e in handler.events if e["event"] == "tool_result"]
+    assert calls and results
+    # The pair shares a correlation id and the result carries latency + usage.
+    assert results[-1]["call_id"] == calls[-1]["call_id"]
+    assert results[-1]["duration_ms"] >= 0
+    assert results[-1]["usage"] == {"prompt_tokens": 7, "completion_tokens": 3}
+
+
 async def test_invalid_params_rejected():
     # Empty query violates the SearchInput min_length bound.
     mcp, _ = build_server(_settings())

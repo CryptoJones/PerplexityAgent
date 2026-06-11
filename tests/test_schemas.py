@@ -45,6 +45,11 @@ def test_deep_research_bounds():
         DeepResearchInput(question="q", num_subquestions=99)
 
 
+def test_deep_research_model_decomposition_defaults_off():
+    assert DeepResearchInput(question="q").use_model_decomposition is False
+    assert DeepResearchInput(question="q", use_model_decomposition=True).use_model_decomposition
+
+
 def test_research_report_schema_shape():
     schema = research_report_schema()
     assert schema["type"] == "object"

@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # reachable solely from the interactive TUI, never via the MCP tools. SSRF
     # controls live in fetch.py; these knobs tune them. Private/loopback/link-local
     # targets are denied by default (fetch_allow_private=False).
-    fetch_user_agent: str = "PerplexityAgent-TUI/0.1 (+https://codeberg.org/CryptoJones/PerplexityAgent)"
+    fetch_user_agent: str = "PerplexityAgent-TUI/0.2 (+https://codeberg.org/CryptoJones/PerplexityAgent)"
     fetch_allow_private: bool = False
     # Where the TUI keeps its sqlite store (history, tabs, spaces, facts). None ->
     # an XDG-style default under the user's data dir, resolved in memory.py.

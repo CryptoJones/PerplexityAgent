@@ -23,6 +23,12 @@ logger = logging.getLogger("perplexity_agent.audit")
 # Substrings that commonly indicate a secret; values are redacted from audit logs.
 _SECRET_KEY_HINTS = ("key", "token", "secret", "authorization", "password", "bearer")
 
+# Keys the hints match but that hold harmless counts, not credentials (the "token"
+# hint would otherwise redact LLM usage metrics out of the audit log).
+_SECRET_KEY_ALLOWLIST = frozenset(
+    {"prompt_tokens", "completion_tokens", "total_tokens", "max_tokens", "max_tokens_per_page"}
+)
+
 # Best-effort patterns that hint at indirect prompt injection inside fetched text.
 # These only *flag* content (added to a metadata field); they never block it, to
 # avoid silently dropping legitimate results.
@@ -41,7 +47,12 @@ def redact(value: object) -> object:
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         for k, v in value.items():
-            if isinstance(k, str) and any(h in k.lower() for h in _SECRET_KEY_HINTS):
+            lowered = k.lower() if isinstance(k, str) else ""
+            if (
+                lowered
+                and lowered not in _SECRET_KEY_ALLOWLIST
+                and any(h in lowered for h in _SECRET_KEY_HINTS)
+            ):
                 out[k] = "***REDACTED***"
             else:
                 out[k] = redact(v)

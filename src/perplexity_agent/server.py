@@ -8,6 +8,8 @@ then emit a redacted audit record (NSA: validate parameters, DoS guard, logging)
 
 from __future__ import annotations
 
+import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -51,14 +53,32 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
         client: PerplexityClient = ctx.request_context.lifespan_context["client"]
         return client
 
-    def _guard(tool: str, params: dict[str, Any]) -> None:
-        """Rate-limit and audit the start of a tool call (params redacted)."""
+    def _guard(tool: str, params: dict[str, Any]) -> str:
+        """Rate-limit and audit the start of a tool call (params redacted).
+
+        Returns a correlation id shared by this call's ``tool_call`` and
+        ``tool_result`` audit events, so a SIEM can pair them.
+        """
+        call_id = uuid.uuid4().hex
         try:
             bucket.acquire()
         except RateLimitError:
-            audit.record("rate_limited", tool=tool, params=params)
+            audit.record("rate_limited", tool=tool, call_id=call_id, params=params)
             raise
-        audit.record("tool_call", tool=tool, params=params)
+        audit.record("tool_call", tool=tool, call_id=call_id, params=params)
+        return call_id
+
+    def _result_fields(call_id: str, started: float, result: dict[str, Any]) -> dict[str, Any]:
+        """Common ``tool_result`` audit fields: correlation, latency, token usage."""
+        fields: dict[str, Any] = {
+            "call_id": call_id,
+            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            "result_hash": content_hash(result),
+        }
+        usage = result.get("usage")
+        if usage:
+            fields["usage"] = usage
+        return fields
 
     @mcp.tool()
     async def perplexity_search(
@@ -71,11 +91,16 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
         args = SearchInput(
             query=query, max_results=max_results, max_tokens_per_page=max_tokens_per_page
         )
-        _guard("perplexity_search", {"query": args.query, "max_results": args.max_results})
+        call_id = _guard(
+            "perplexity_search", {"query": args.query, "max_results": args.max_results}
+        )
+        started = time.monotonic()
         result = await _client(ctx).search(
             args.query, args.max_results, args.max_tokens_per_page
         )
-        audit.record("tool_result", tool="perplexity_search", result_hash=content_hash(result))
+        audit.record(
+            "tool_result", tool="perplexity_search", **_result_fields(call_id, started, result)
+        )
         return result
 
     @mcp.tool()
@@ -89,13 +114,14 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
         args = SonarAskInput(
             question=question, model=SonarModel(model), system_prompt=system_prompt
         )
-        _guard("sonar_ask", {"question": args.question, "model": args.model.value})
+        call_id = _guard("sonar_ask", {"question": args.question, "model": args.model.value})
+        started = time.monotonic()
         messages: list[dict[str, str]] = []
         if args.system_prompt:
             messages.append({"role": "system", "content": args.system_prompt})
         messages.append({"role": "user", "content": args.question})
         result = await _client(ctx).chat(messages, model=args.model.value)
-        audit.record("tool_result", tool="sonar_ask", result_hash=content_hash(result))
+        audit.record("tool_result", tool="sonar_ask", **_result_fields(call_id, started, result))
         return result
 
     @mcp.tool()
@@ -105,6 +131,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
         num_subquestions: int = 4,
         model: str = "sonar-pro",
         max_results_per_subquestion: int = 5,
+        use_model_decomposition: bool = False,
     ) -> dict[str, Any]:
         """Run a multi-step research pipeline returning a validated, cited report."""
         args = DeepResearchInput(
@@ -112,23 +139,26 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             num_subquestions=num_subquestions,
             model=SonarModel(model),
             max_results_per_subquestion=max_results_per_subquestion,
+            use_model_decomposition=use_model_decomposition,
         )
-        _guard(
+        call_id = _guard(
             "deep_research",
             {"question": args.question, "num_subquestions": args.num_subquestions},
         )
+        started = time.monotonic()
         result = await _deep_research(
             _client(ctx),
             args.question,
             num_subquestions=args.num_subquestions,
             model=args.model.value,
             max_results_per_subquestion=args.max_results_per_subquestion,
+            use_model_decomposition=args.use_model_decomposition,
         )
         audit.record(
             "tool_result",
             tool="deep_research",
-            result_hash=content_hash(result),
             validation_passed=result["validation_report"]["passed"],
+            **_result_fields(call_id, started, result),
         )
         return result
 

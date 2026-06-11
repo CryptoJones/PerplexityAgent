@@ -25,6 +25,13 @@ def test_redact_inline_token_in_string():
     assert "REDACTED" in out
 
 
+def test_redact_keeps_token_usage_counts():
+    # "prompt_tokens" matches the "token" hint but is a harmless metric, not a secret.
+    out = redact({"usage": {"prompt_tokens": 7, "completion_tokens": 3}, "api_token": "x"})
+    assert out["usage"] == {"prompt_tokens": 7, "completion_tokens": 3}
+    assert out["api_token"] == "***REDACTED***"
+
+
 def test_redact_is_recursive():
     out = redact({"outer": [{"token": "secret"}]})
     assert out["outer"][0]["token"] == "***REDACTED***"

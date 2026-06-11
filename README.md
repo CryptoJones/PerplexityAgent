@@ -148,6 +148,7 @@ The full pipeline: decompose → search each sub-question → dedupe → synthes
 | `num_subquestions` | int | `4` | 1–8 |
 | `model` | string | `"sonar-pro"` | `"sonar"` or `"sonar-pro"` |
 | `max_results_per_subquestion` | int | `5` | 1–10 |
+| `use_model_decomposition` | bool | `false` | ask Sonar to derive the sub-questions (one extra call; falls back to the deterministic angles on any failure) |
 
 ```json
 { "question": "Is small modular nuclear cost-competitive with grid-scale solar?", "num_subquestions": 5 }
@@ -175,7 +176,8 @@ Returns a structured, **citation-validated** report:
     "passed": true,
     "flagged": []
   },
-  "security_flags": { "possible_prompt_injection_patterns": [] }
+  "security_flags": { "possible_prompt_injection_patterns": [] },
+  "usage": { "prompt_tokens": 1234, "completion_tokens": 567 }
 }
 ```
 
@@ -252,7 +254,7 @@ physics. Everything else maps onto terminal-feasible equivalents:
 | Chat with your tabs / synthesis | `/summary` across all open tabs; bare chat is tab-aware |
 | AI tab grouping | `/group` clusters open tabs into named groups |
 | Deep research | `/research <q>` runs the full validated, cited pipeline |
-| Memory & Spaces | Local SQLite store; `/space [name]` switches workspaces |
+| Memory & Spaces | Local SQLite store (owner-only 0600; tabs dedupe per space+URL, newest 50 kept); `/space [name]` switches workspaces |
 | Background / scheduled tasks | `/task search\|fetch <seconds> <target>` monitors and alerts on change; `/untask <id>` stops it |
 | Agentic task planning | Research-only planning (decompose a goal); **no real web actions** |
 
@@ -266,8 +268,9 @@ uv run perplexity-agent tui
 The page fetcher (`/open`) is the only egress path other than the Perplexity API and
 is reachable **only from the TUI**, never via the MCP tools. It is SSRF-hardened
 (scheme allowlist, private/loopback/link-local IPs rejected on every redirect hop,
-size/time caps) and flags fetched text for indirect prompt injection before it
-reaches Sonar. See [`SECURITY.md`](SECURITY.md). The MCP tool surface is unchanged.
+connections pinned to the validated IP, a streaming size cap, and a text-only
+content-type allowlist) and flags fetched text for indirect prompt injection before
+it reaches Sonar. See [`SECURITY.md`](SECURITY.md). The MCP tool surface is unchanged.
 
 ## Configuration
 
