@@ -99,3 +99,5 @@ audit log, and CI (ruff, pytest, pip-audit, gitleaks, CodeQL).
 [Unreleased]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.2.0...HEAD
 [0.2.0]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://codeberg.org/CryptoJones/PerplexityAgent/releases/tag/v0.1.0
+
+Proudly Made in Nebraska. Go Big Red! 🌽 https://xkcd.com/2347/
