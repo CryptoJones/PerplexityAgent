@@ -7,7 +7,7 @@ fails fast at startup if the key is absent (NSA: access control / token security
 
 from __future__ import annotations
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -66,6 +66,16 @@ class Settings(BaseSettings):
     # recent rows per Space are retained; older ones are pruned on write.
     max_history_per_space: int | None = Field(default=None, gt=0)
     max_tabs_per_space: int | None = Field(default=None, gt=0)
+
+    @field_validator("max_history_per_space", "max_tabs_per_space", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: object) -> object:
+        # A blank env var (e.g. `PERPLEXITY_MAX_HISTORY_PER_SPACE=` in a .env)
+        # means "not set" -> None, rather than failing int validation and crashing
+        # startup with a misleading error.
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
 
 def load_settings() -> Settings:

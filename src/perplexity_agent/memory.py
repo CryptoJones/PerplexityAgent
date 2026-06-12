@@ -40,6 +40,13 @@ CREATE TABLE IF NOT EXISTS spaces (
 -- lookups stay fast as these append-only tables grow.
 CREATE INDEX IF NOT EXISTS idx_conversations_space ON conversations(space, id);
 CREATE INDEX IF NOT EXISTS idx_tabs_space ON tabs(space, id);
+-- A tab is identified by its URL within a Space: re-opening a URL updates that
+-- tab in place (save_tab uses INSERT OR REPLACE) instead of stacking duplicate
+-- rows. That keeps the row count, the tabs() LIMIT, and retention pruning all
+-- tracking DISTINCT tabs. Collapse any pre-existing duplicates (newest row per
+-- URL wins), then enforce uniqueness.
+DELETE FROM tabs WHERE id NOT IN (SELECT MAX(id) FROM tabs GROUP BY space, url);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tabs_space_url ON tabs(space, url);
 -- Retire the legacy `facts` table. It was never read or written, so dropping it
 -- destroys no user data; this just cleans it out of stores created before it was
 -- removed from the schema.
@@ -135,33 +142,31 @@ class Store:
 
     # --- tabs --------------------------------------------------------------
     def save_tab(self, tab: StoredTab, *, now: float, space: str = "default") -> None:
+        # INSERT OR REPLACE on the UNIQUE(space, url) index: re-opening a URL
+        # replaces its row (taking a fresh, higher id so it sorts as most-recent)
+        # rather than stacking a duplicate. One row per distinct URL means the
+        # LIMIT in tabs() and retention pruning both count distinct tabs.
         self._conn.execute(
-            "INSERT INTO tabs (space, title, url, kind, text, created) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO tabs (space, title, url, kind, text, created) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (space, tab.title, tab.url, tab.kind, tab.text, now),
         )
         self._prune("tabs", space, self._max_tabs)
         self._conn.commit()
 
     def tabs(self, *, space: str = "default", limit: int = 50) -> list[StoredTab]:
-        """Return up to ``limit`` most-recent tabs, deduped by URL (newest wins).
+        """Return the ``limit`` most-recent tabs for ``space``, in chronological order.
 
-        Bounds what ``/space`` reloads into memory and the prompt context: the
-        tabs table is append-only (one row per ``/open``), so without a cap a
-        long-lived space would grow without limit.
+        save_tab keeps one row per distinct URL (UNIQUE(space, url)), so ``LIMIT``
+        here returns up to ``limit`` *distinct* tabs — it bounds what ``/space``
+        reloads into memory without a burst of re-opens crowding out other tabs.
         """
         rows = self._conn.execute(
             "SELECT title, url, kind, text FROM tabs WHERE space = ? ORDER BY id DESC LIMIT ?",
             (space, limit),
         ).fetchall()
-        seen: set[str] = set()
-        recent: list[StoredTab] = []
-        for r in rows:  # rows are newest-first; keep the first sighting of each URL
-            if r["url"] in seen:
-                continue
-            seen.add(r["url"])
-            recent.append(StoredTab(r["title"], r["url"], r["kind"], r["text"]))
-        recent.reverse()  # back to chronological order for display
-        return recent
+        rows.reverse()  # newest-first from SQL -> chronological for display
+        return [StoredTab(r["title"], r["url"], r["kind"], r["text"]) for r in rows]
 
     # --- spaces ------------------------------------------------------------
     def create_space(self, name: str, *, now: float) -> None:

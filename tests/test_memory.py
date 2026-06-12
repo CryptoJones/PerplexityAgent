@@ -40,15 +40,32 @@ def test_tabs_round_trip(tmp_path):
 
 
 def test_tabs_dedupe_by_url_newest_wins(tmp_path):
-    # Re-opening the same URL must not stack duplicate rows in the returned view;
-    # the most recent title/text for a URL wins, order stays chronological.
+    # Re-opening the same URL updates that tab in place (one row), newest content
+    # wins, and the re-opened tab sorts as most-recent.
     s = _store(tmp_path)
     s.save_tab(StoredTab("Old", "https://x", "page", "v1"), now=1.0)
-    s.save_tab(StoredTab("New", "https://x", "page", "v2"), now=2.0)
-    s.save_tab(StoredTab("Other", "https://y", "page", "z"), now=3.0)
+    s.save_tab(StoredTab("Other", "https://y", "page", "z"), now=2.0)
+    s.save_tab(StoredTab("New", "https://x", "page", "v2"), now=3.0)  # re-open x
     tabs = s.tabs()
-    assert [t.url for t in tabs] == ["https://x", "https://y"]
-    assert tabs[0].title == "New" and tabs[0].text == "v2"
+    assert [t.url for t in tabs] == ["https://y", "https://x"]  # x bumped to newest
+    assert tabs[-1].title == "New" and tabs[-1].text == "v2"
+    # Exactly one physical row per URL — no duplicate stacking.
+    n = s._conn.execute("SELECT COUNT(*) AS n FROM tabs").fetchone()["n"]
+    assert n == 2
+    s.close()
+
+
+def test_reopening_a_url_does_not_evict_other_tabs_under_retention(tmp_path):
+    # Regression: row-count pruning + URL dedup must not let a burst of re-opens
+    # of one URL crowd out other still-open tabs.
+    s = Store(tmp_path / "store.db", max_tabs_per_space=3)
+    s.save_tab(StoredTab("A", "https://a", "page", "a"), now=1.0)
+    s.save_tab(StoredTab("B", "https://b", "page", "b"), now=2.0)
+    s.save_tab(StoredTab("C", "https://c", "page", "c"), now=3.0)
+    for i in range(10):  # hammer one URL
+        s.save_tab(StoredTab("A", "https://a", "page", f"a{i}"), now=10.0 + i)
+    urls = {t.url for t in s.tabs()}
+    assert urls == {"https://a", "https://b", "https://c"}  # none evicted
     s.close()
 
 
