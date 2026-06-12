@@ -55,16 +55,16 @@ def test_save_tab_dedupes_by_space_and_url(tmp_path):
 
 
 def test_tabs_retention_cap_per_space(tmp_path):
-    from perplexity_agent.memory import _MAX_TABS_PER_SPACE
+    from perplexity_agent.memory import _DEFAULT_MAX_TABS_PER_SPACE
 
     s = _store(tmp_path)
-    for i in range(_MAX_TABS_PER_SPACE + 5):
+    for i in range(_DEFAULT_MAX_TABS_PER_SPACE + 5):
         s.save_tab(StoredTab(f"T{i}", f"https://x/{i}", "page", "b"), now=float(i))
     tabs = s.tabs()
-    assert len(tabs) == _MAX_TABS_PER_SPACE
+    assert len(tabs) == _DEFAULT_MAX_TABS_PER_SPACE
     # The oldest tabs were pruned; the newest survive.
     assert tabs[0].title == "T5"
-    assert tabs[-1].title == f"T{_MAX_TABS_PER_SPACE + 4}"
+    assert tabs[-1].title == f"T{_DEFAULT_MAX_TABS_PER_SPACE + 4}"
     # Other spaces are untouched by the cap.
     s.save_tab(StoredTab("W", "https://w", "page", "b"), now=999.0, space="work")
     assert len(s.tabs(space="work")) == 1
@@ -83,13 +83,67 @@ def test_store_file_is_owner_only(tmp_path):
     s.close()
 
 
-def test_spaces_and_facts(tmp_path):
+def test_spaces_create_is_idempotent(tmp_path):
     s = _store(tmp_path)
     s.create_space("research", now=1.0)
     s.create_space("research", now=2.0)  # idempotent
     assert "research" in s.spaces()
-    s.remember("user prefers concise answers", now=1.0)
-    assert s.facts() == ["user prefers concise answers"]
+    s.close()
+
+
+def test_history_unbounded_by_default(tmp_path):
+    # The safe default: no history cap means chat history is never auto-deleted.
+    s = _store(tmp_path)
+    for i in range(60):
+        s.add_message("user", f"m{i}", now=float(i))
+    count = s._conn.execute("SELECT COUNT(*) AS n FROM conversations").fetchone()["n"]
+    assert count == 60
+    s.close()
+
+
+def test_history_retention_prunes_oldest_per_space_when_configured(tmp_path):
+    s = Store(tmp_path / "store.db", max_history_per_space=3)
+    for i in range(6):
+        s.add_message("user", f"d{i}", now=float(i), space="default")
+    s.add_message("user", "keep-me", now=99.0, space="work")
+    default_rows = [m["content"] for m in s.history(space="default", limit=99)]
+    assert default_rows == ["d3", "d4", "d5"]
+    assert [m["content"] for m in s.history(space="work")] == ["keep-me"]  # other Space untouched
+    s.close()
+
+
+def test_tabs_cap_is_configurable(tmp_path):
+    s = Store(tmp_path / "store.db", max_tabs_per_space=2)
+    for i in range(5):
+        s.save_tab(StoredTab(f"T{i}", f"https://x/{i}", "page", "b"), now=float(i))
+    assert [t.url for t in s.tabs()] == ["https://x/3", "https://x/4"]
+    s.close()
+
+
+def test_space_lookup_indexes_exist(tmp_path):
+    s = _store(tmp_path)
+    names = {
+        r["name"]
+        for r in s._conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+    }
+    assert {"idx_conversations_space", "idx_tabs_space", "idx_tabs_space_url"} <= names
+    s.close()
+
+
+def test_legacy_facts_table_is_dropped(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "store.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE facts (id INTEGER PRIMARY KEY, fact TEXT, created REAL)")
+    conn.commit()
+    conn.close()
+    s = Store(db)  # opening runs the schema, which drops the legacy table
+    names = {
+        r["name"]
+        for r in s._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    assert "facts" not in names
     s.close()
 
 
