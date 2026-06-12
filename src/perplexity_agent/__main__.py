@@ -91,7 +91,8 @@ def main() -> None:
         # discard the flag and launch an interactive UI instead.
         if args.transport is not None:
             parser.error("--transport is not valid with the 'tui' subcommand.")
-        settings = load_settings()  # fail fast if the API key is missing
+        # Loaded after the arg check so a bad invocation errors regardless of env.
+        settings = load_settings()
         _run_tui(settings)
         return
 
