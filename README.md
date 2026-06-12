@@ -260,7 +260,7 @@ physics. Everything else maps onto terminal-feasible equivalents:
 | Chat with your tabs / synthesis | `/summary` across all open tabs; bare chat is tab-aware |
 | AI tab grouping | `/group` clusters open tabs into named groups |
 | Deep research | `/research <q>` runs the full validated, cited pipeline |
-| Memory & Spaces | Local SQLite store (owner-only 0600; tabs dedupe per space+URL, newest 50 kept); `/space [name]` switches workspaces |
+| Memory & Spaces | Local SQLite store (owner-only 0600; tabs dedupe per space+URL, recent-tab cap and optional history retention are configurable); `/space [name]` switches workspaces |
 | Background / scheduled tasks | `/task search\|fetch <seconds> <target>` monitors and alerts on change; `/untask <id>` stops it |
 | Agentic task planning | Research-only planning (decompose a goal); **no real web actions** |
 
@@ -282,8 +282,11 @@ it reaches Sonar. See [`SECURITY.md`](SECURITY.md). The MCP tool surface is unch
 
 All optional knobs are environment variables (see [`.env.example`](.env.example)):
 timeouts, response-size cap, retry count, rate limits, an optional JSON audit-log
-path, and (for the TUI) the fetch User-Agent, `PERPLEXITY_FETCH_ALLOW_PRIVATE`, and
-`PERPLEXITY_STORE_PATH`.
+path, and (for the TUI) the fetch User-Agent, `PERPLEXITY_FETCH_ALLOW_PRIVATE`,
+`PERPLEXITY_STORE_PATH`, and the per-Space store retention caps
+(`PERPLEXITY_MAX_TABS_PER_SPACE`, default 50; `PERPLEXITY_MAX_HISTORY_PER_SPACE`,
+default unbounded — set a positive integer to keep only the N most-recent rows
+per Space, or leave blank to keep everything).
 
 ## Development
 

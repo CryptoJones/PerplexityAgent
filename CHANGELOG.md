@@ -13,6 +13,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closes the pipe, never linger deaf and silently discard requests (the
   failure mode diagnosed in obsidian-mcp, omind#49). Verified the server
   already behaves correctly; the test locks it in.
+- **Configurable per-Space store retention** — `PERPLEXITY_MAX_TABS_PER_SPACE`
+  (default 50, the existing recent-tab cache) and `PERPLEXITY_MAX_HISTORY_PER_SPACE`
+  (default unbounded). Conversation history is never auto-deleted unless an
+  operator opts in; a blank value is treated as "unbounded" rather than crashing
+  startup.
+
+### Security
+
+- The token-bucket rate limit and the audit log are now wired together for the
+  TUI surface via a shared `RequestGuard`: the TUI commands/assist path and the
+  background `/task` monitors go through it, so the TUI is audited and background
+  probes are metered (previously the TUI built an audit logger it never called
+  and probes bypassed the limiter). The MCP server keeps its own correlation-id
+  guard.
+- Untrusted page titles are escaped before the tab bar renders them, so a title
+  with console-markup metacharacters can neither crash the bar nor inject styling.
+
+### Changed
+
+- CI runs lint, type-check, and dependency-audit across the 3.11/3.12/3.13 matrix
+  again (they had been narrowed to 3.12 only), adds a job that exercises the
+  tui-less core install, and no longer cancels in-progress runs on `main`. The
+  v0.2.0 CI hardening (pinned action SHAs, full-history gitleaks) is preserved.
+- The local store indexes its per-Space lookups (`conversations`/`tabs` by
+  `space`), and the dead `facts` table is dropped on open.
+
+### Fixed
+
+- `TaskManager.aclose()` awaits cancelled probe handles before returning, so
+  quitting the TUI doesn't race `on_unmount` closing the shared fetcher/client.
+- `/search` runs its two independent calls concurrently with `return_exceptions`,
+  so a failure in one no longer orphans the other.
+- `perplexity-agent --transport http tui` now errors instead of silently
+  ignoring `--transport` and launching the interactive UI.
+- `group_tabs` tolerates a malformed or schema-nonconforming model response
+  instead of raising.
 
 ## [0.2.0] - 2026-06-10
 
