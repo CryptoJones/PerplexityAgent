@@ -122,6 +122,19 @@ def test_citation_urls_dedupes_by_canonical_url():
     assert citation_urls(resp) == ["https://Example.com/"]
 
 
+@respx.mock
+async def test_group_tabs_survives_malformed_response_shape(settings):
+    # A response missing choices/message makes message_content() raise ValueError;
+    # group_tabs must absorb it and return [], not propagate.
+    respx.post("https://api.perplexity.ai/chat/completions").mock(
+        return_value=httpx.Response(200, json={"unexpected": "shape"})
+    )
+    tabs = [Tab("A", "https://a", "")]
+    async with PerplexityClient(settings) as client:
+        out = await Assistant(client).group_tabs(tabs)
+    assert out == []
+
+
 def test_plan_task_reuses_decompose():
     # No network: plan_task is deterministic decomposition.
     class _Dummy:

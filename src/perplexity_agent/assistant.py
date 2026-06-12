@@ -215,7 +215,11 @@ class Assistant:
         try:
             parsed = json.loads(message_content(resp))
             raw_groups = parsed.get("groups", [])
-        except (json.JSONDecodeError, AttributeError, TypeError):
+        except (ValueError, AttributeError, TypeError):
+            # ValueError covers json.JSONDecodeError AND the "Unexpected Sonar
+            # response shape" ValueError that message_content() raises on a body
+            # missing choices/message — so a malformed response yields [], as the
+            # defensive handling below promises, rather than escaping.
             raw_groups = []
         if not isinstance(raw_groups, list):
             raw_groups = []
