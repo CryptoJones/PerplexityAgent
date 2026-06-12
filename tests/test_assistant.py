@@ -99,6 +99,29 @@ async def test_group_tabs_ignores_bad_indexes(settings):
     assert [t.title for t in out[0]["tabs"]] == ["A"]
 
 
+@respx.mock
+async def test_group_tabs_survives_nonconforming_shapes(settings):
+    # json_schema is best-effort: groups as bare strings, or tab_indexes as a
+    # non-list, must not raise — they yield no groups instead.
+    bad = {"groups": ["Shopping", {"name": "News", "tab_indexes": 3}, {"tab_indexes": [0]}]}
+    respx.post("https://api.perplexity.ai/chat/completions").mock(
+        return_value=httpx.Response(200, json=_chat(json.dumps(bad)))
+    )
+    tabs = [Tab("A", "https://a", "")]
+    async with PerplexityClient(settings) as client:
+        out = await Assistant(client).group_tabs(tabs)
+    # Only the last entry is well-formed (valid index, default name).
+    assert [g["name"] for g in out] == ["Group"]
+    assert [t.title for t in out[0]["tabs"]] == ["A"]
+
+
+def test_citation_urls_dedupes_by_canonical_url():
+    # Same source cited with a trailing slash and different case collapses to one,
+    # matching how the search path dedupes.
+    resp = _chat("x", citations=["https://Example.com/", "https://example.com"])
+    assert citation_urls(resp) == ["https://Example.com/"]
+
+
 def test_plan_task_reuses_decompose():
     # No network: plan_task is deterministic decomposition.
     class _Dummy:

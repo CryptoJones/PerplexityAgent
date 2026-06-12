@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .client import PerplexityClient, dedupe_results
+from .client import PerplexityClient, citation_urls, dedupe_results, message_content
 from .schemas import research_report_schema
 from .security import scan_for_injection
 from .validation import build_known_urls, validate_report
@@ -46,28 +46,12 @@ def decompose(question: str, n: int) -> list[str]:
 
 def _extract_report(chat_response: dict[str, Any]) -> dict[str, Any]:
     """Pull the JSON report out of an OpenAI-compatible chat completion."""
-    try:
-        content = chat_response["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"Unexpected Sonar response shape: {exc}") from exc
+    content = message_content(chat_response)
     try:
         report: dict[str, Any] = json.loads(content)
     except (json.JSONDecodeError, TypeError) as exc:
         raise ValueError(f"Sonar did not return valid JSON: {exc}") from exc
     return report
-
-
-def _citation_urls(chat_response: dict[str, Any]) -> list[str]:
-    """Best-effort extraction of citation URLs from the Sonar response metadata."""
-    urls: list[str] = []
-    for key in ("citations", "search_results"):
-        items = chat_response.get(key) or []
-        for item in items:
-            if isinstance(item, str):
-                urls.append(item)
-            elif isinstance(item, dict) and item.get("url"):
-                urls.append(item["url"])
-    return urls
 
 
 async def deep_research(
@@ -105,7 +89,7 @@ async def deep_research(
     chat_response = await client.chat(messages, model=model, response_format=response_format)
 
     report = _extract_report(chat_response)
-    known = build_known_urls(source_summary, extra=_citation_urls(chat_response))
+    known = build_known_urls(source_summary, extra=citation_urls(chat_response))
     report, validation = validate_report(report, known)
 
     # Flag possible indirect prompt injection in retrieved snippets (untrusted input).
