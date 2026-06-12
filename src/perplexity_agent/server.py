@@ -18,7 +18,7 @@ from .client import PerplexityClient
 from .config import Settings, load_settings
 from .research import deep_research as _deep_research
 from .schemas import DeepResearchInput, SearchInput, SonarAskInput, SonarModel
-from .security import AuditLogger, RateLimitError, TokenBucket, content_hash
+from .security import AuditLogger, RequestGuard, TokenBucket, content_hash
 
 
 def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
@@ -26,6 +26,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
     settings = settings or load_settings()
     audit = AuditLogger(settings.audit_log_path)
     bucket = TokenBucket(settings.rate_per_minute, settings.rate_burst)
+    guard = RequestGuard(bucket, audit)
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -53,12 +54,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
 
     def _guard(tool: str, params: dict[str, Any]) -> None:
         """Rate-limit and audit the start of a tool call (params redacted)."""
-        try:
-            bucket.acquire()
-        except RateLimitError:
-            audit.record("rate_limited", tool=tool, params=params)
-            raise
-        audit.record("tool_call", tool=tool, params=params)
+        guard.acquire("tool_call", tool=tool, params=params)
 
     @mcp.tool()
     async def perplexity_search(

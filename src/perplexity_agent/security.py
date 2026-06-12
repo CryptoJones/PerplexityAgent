@@ -123,3 +123,30 @@ class AuditLogger:
         """Emit one audit event. All fields pass through secret redaction."""
         payload = {"event": event, **{k: redact(v) for k, v in fields.items()}}
         self._logger.info(json.dumps(payload, default=str, sort_keys=True))
+
+
+class RequestGuard:
+    """Wires the token-bucket rate limit and the audit log together.
+
+    The single place those two NSA controls (DoS resistance + logging/detection)
+    are paired, so every surface that reaches the network — the MCP tools, the
+    TUI, and its background monitor tasks — goes through the same gate instead of
+    re-implementing (or, worse, forgetting) one half of it.
+    """
+
+    def __init__(self, bucket: TokenBucket, audit: AuditLogger) -> None:
+        self._bucket = bucket
+        self._audit = audit
+
+    def acquire(self, event: str, **fields: object) -> None:
+        """Charge one token and audit the call; on rate-limit audit then re-raise."""
+        try:
+            self._bucket.acquire()
+        except RateLimitError:
+            self._audit.record("rate_limited", blocked=event, **fields)
+            raise
+        self._audit.record(event, **fields)
+
+    def record(self, event: str, **fields: object) -> None:
+        """Audit an event without charging a token (e.g. a tool/command result)."""
+        self._audit.record(event, **fields)

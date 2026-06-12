@@ -108,12 +108,26 @@ class Store:
         )
         self._conn.commit()
 
-    def tabs(self, *, space: str = "default") -> list[StoredTab]:
+    def tabs(self, *, space: str = "default", limit: int = 50) -> list[StoredTab]:
+        """Return up to ``limit`` most-recent tabs, deduped by URL (newest wins).
+
+        Bounds what ``/space`` reloads into memory and the prompt context: the
+        tabs table is append-only (one row per ``/open``), so without a cap a
+        long-lived space would grow without limit.
+        """
         rows = self._conn.execute(
-            "SELECT title, url, kind, text FROM tabs WHERE space = ? ORDER BY id",
-            (space,),
+            "SELECT title, url, kind, text FROM tabs WHERE space = ? ORDER BY id DESC LIMIT ?",
+            (space, limit),
         ).fetchall()
-        return [StoredTab(r["title"], r["url"], r["kind"], r["text"]) for r in rows]
+        seen: set[str] = set()
+        recent: list[StoredTab] = []
+        for r in rows:  # rows are newest-first; keep the first sighting of each URL
+            if r["url"] in seen:
+                continue
+            seen.add(r["url"])
+            recent.append(StoredTab(r["title"], r["url"], r["kind"], r["text"]))
+        recent.reverse()  # back to chronological order for display
+        return recent
 
     # --- spaces ------------------------------------------------------------
     def create_space(self, name: str, *, now: float) -> None:

@@ -3,7 +3,9 @@ import time
 import pytest
 
 from perplexity_agent.security import (
+    AuditLogger,
     RateLimitError,
+    RequestGuard,
     TokenBucket,
     content_hash,
     redact,
@@ -60,3 +62,24 @@ def test_token_bucket_refills_over_time(monkeypatch):
         b.acquire()
     fake["t"] += 1.1  # ~1 token refilled
     b.acquire()
+
+
+def test_request_guard_audits_each_call(tmp_path):
+    log = tmp_path / "audit.log"
+    guard = RequestGuard(TokenBucket(rate_per_minute=6000, burst=10), AuditLogger(str(log)))
+    guard.acquire("command", command="search")
+    guard.record("command_result", ok=True)
+    lines = log.read_text().splitlines()
+    assert any('"event": "command"' in ln and '"command": "search"' in ln for ln in lines)
+    assert any('"event": "command_result"' in ln for ln in lines)
+
+
+def test_request_guard_rate_limit_is_audited_then_raised(tmp_path):
+    log = tmp_path / "audit.log"
+    guard = RequestGuard(TokenBucket(rate_per_minute=1, burst=1), AuditLogger(str(log)))
+    guard.acquire("assist")  # spends the only token
+    with pytest.raises(RateLimitError):
+        guard.acquire("assist")
+    lines = log.read_text().splitlines()
+    # The blocked attempt leaves an audit trail naming the event it was guarding.
+    assert any('"event": "rate_limited"' in ln and '"blocked": "assist"' in ln for ln in lines)

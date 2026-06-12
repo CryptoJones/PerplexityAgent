@@ -39,6 +39,29 @@ def test_tabs_round_trip(tmp_path):
     s.close()
 
 
+def test_tabs_dedupe_by_url_newest_wins(tmp_path):
+    # Re-opening the same URL must not stack duplicate rows in the returned view;
+    # the most recent title/text for a URL wins, order stays chronological.
+    s = _store(tmp_path)
+    s.save_tab(StoredTab("Old", "https://x", "page", "v1"), now=1.0)
+    s.save_tab(StoredTab("New", "https://x", "page", "v2"), now=2.0)
+    s.save_tab(StoredTab("Other", "https://y", "page", "z"), now=3.0)
+    tabs = s.tabs()
+    assert [t.url for t in tabs] == ["https://x", "https://y"]
+    assert tabs[0].title == "New" and tabs[0].text == "v2"
+    s.close()
+
+
+def test_tabs_limit_caps_rows(tmp_path):
+    s = _store(tmp_path)
+    for i in range(10):
+        s.save_tab(StoredTab(f"T{i}", f"https://x/{i}", "page", "b"), now=float(i))
+    tabs = s.tabs(limit=3)
+    assert len(tabs) == 3
+    assert [t.url for t in tabs] == ["https://x/7", "https://x/8", "https://x/9"]
+    s.close()
+
+
 def test_spaces_and_facts(tmp_path):
     s = _store(tmp_path)
     s.create_space("research", now=1.0)

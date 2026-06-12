@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+
+from perplexity_agent.security import AuditLogger, RateLimitError, RequestGuard, TokenBucket
 from perplexity_agent.tasks import MonitorTask, TaskManager
 
 
@@ -52,6 +55,18 @@ async def test_add_and_remove_tracks_tasks():
     assert removed is True
     assert removed_again is False
     await mgr.aclose()
+
+
+async def test_probe_goes_through_the_guard():
+    # With a guard whose bucket is exhausted, a probe is rate-limited instead of
+    # making an unmetered, unaudited API/web call.
+    guard = RequestGuard(TokenBucket(rate_per_minute=1, burst=1), AuditLogger())
+    guard.acquire("warmup")  # drain the only token
+    assistant = _FakeAssistant([[{"url": "https://a.com"}]])
+    mgr = TaskManager(assistant, _FakeFetcher(), lambda _m: None, guard=guard)
+    task = MonitorTask(id=1, kind="search", target="widgets", interval_s=999)
+    with pytest.raises(RateLimitError):
+        await mgr.run_once(task)
 
 
 class _ErroringAssistant:
