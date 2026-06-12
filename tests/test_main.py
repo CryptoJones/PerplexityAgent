@@ -44,6 +44,18 @@ def test_main_http_dispatches(monkeypatch, fake_settings):
     assert ran["http"] is True
 
 
+def test_main_transport_with_tui_is_rejected(monkeypatch, fake_settings):
+    # `--transport http tui` must error, not silently discard the flag and start
+    # an interactive UI on a headless host.
+    ran = {}
+    monkeypatch.setattr(cli, "_run_tui", lambda settings: ran.setdefault("tui", True))
+    monkeypatch.setattr(sys, "argv", ["perplexity-agent", "--transport", "http", "tui"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2  # argparse usage error
+    assert "tui" not in ran
+
+
 def test_run_tui_reports_missing_extra(monkeypatch, fake_settings):
     # Simulate the `tui` extra not being installed: a None entry in sys.modules
     # makes `from .tui import run_tui` raise ImportError without touching the real

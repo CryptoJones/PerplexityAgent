@@ -78,19 +78,24 @@ def main() -> None:
     parser.add_argument(
         "--transport",
         choices=["stdio", "http"],
-        default="stdio",
+        default=None,  # sentinel: distinguishes "not passed" from an explicit "stdio"
         help="MCP transport (default: stdio). 'http' requires PERPLEXITY_HTTP_AUTH_TOKEN.",
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("tui", help="Launch the interactive Comet-style terminal UI.")
     args = parser.parse_args()
 
-    settings = load_settings()  # fail fast if the API key is missing
-
     if args.command == "tui":
+        # --transport only governs the MCP server; pairing it with `tui` is a
+        # mistake (e.g. a headless unit edited to add `tui`) and must not silently
+        # discard the flag and launch an interactive UI instead.
+        if args.transport is not None:
+            parser.error("--transport is not valid with the 'tui' subcommand.")
+        settings = load_settings()  # fail fast if the API key is missing
         _run_tui(settings)
         return
 
+    settings = load_settings()  # fail fast if the API key is missing
     mcp, settings = build_server(settings)
     if args.transport == "http":
         _run_http(mcp, settings)
