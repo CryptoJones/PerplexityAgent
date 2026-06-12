@@ -1,3 +1,5 @@
+<p align="center"><em>Proudly Made in Nebraska. Go Big Red! 🌽 <a href="https://xkcd.com/2347/">https://xkcd.com/2347/</a></em></p>
+
 # PerplexityAgent
 
 A simple, **security-hardened** [Model Context Protocol](https://modelcontextprotocol.io)
@@ -273,8 +275,11 @@ reaches Sonar. See [`SECURITY.md`](SECURITY.md). The MCP tool surface is unchang
 
 All optional knobs are environment variables (see [`.env.example`](.env.example)):
 timeouts, response-size cap, retry count, rate limits, an optional JSON audit-log
-path, and (for the TUI) the fetch User-Agent, `PERPLEXITY_FETCH_ALLOW_PRIVATE`, and
-`PERPLEXITY_STORE_PATH`.
+path, and (for the TUI) the fetch User-Agent, `PERPLEXITY_FETCH_ALLOW_PRIVATE`,
+`PERPLEXITY_STORE_PATH`, and optional per-Space retention caps
+(`PERPLEXITY_MAX_HISTORY_PER_SPACE` / `PERPLEXITY_MAX_TABS_PER_SPACE` — unset means
+keep everything; set a positive integer to keep only the N most-recent rows per
+Space).
 
 ## Development
 

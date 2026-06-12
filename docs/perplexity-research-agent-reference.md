@@ -198,3 +198,7 @@ A practical validation layer should enforce three checks:
 ## Deployment notes
 
 Perplexity’s quickstart materials describe OpenAI SDK compatibility for Sonar and standard authenticated HTTPS access for the broader API platform, which makes local integration straightforward through a small backend wrapper.[cite:30][cite:37] The cleanest deployment pattern is to keep Perplexity keys on the server, expose only internal endpoints to local apps, and put caching plus validation in the same control plane.[cite:6][cite:17]
+
+---
+
+*Proudly Made in Nebraska. Go Big Red! 🌽 <https://xkcd.com/2347/>*

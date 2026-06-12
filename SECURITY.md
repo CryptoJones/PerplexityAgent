@@ -24,12 +24,12 @@ operating-system account the server runs under.
 | **Choose supported MCP projects** | Built on the official `mcp` Python SDK (FastMCP). Dependencies are pinned and fully locked in `uv.lock`. |
 | **Design for boundaries / least privilege** | Default **stdio** transport runs locally with no network exposure. No shell execution, no filesystem writes (except an optional, explicitly-configured audit-log path). Egress is only to `api.perplexity.ai`. The API key lives only in the client layer and is **never** returned by a tool. The MCP server's only egress is `api.perplexity.ai`; the optional TUI adds an SSRF-guarded page fetcher (see below) that is never reachable from a tool. |
 | **Validate parameters** | Every tool input is validated against a strict `pydantic` model (`schemas.py`) with bounded string lengths (≤ 4 KB), numeric ranges (`max_results` 1–20, `num_subquestions` 1–8), and a `model` enum. Unknown fields are rejected (`extra="forbid"`), preventing parameter smuggling. |
-| **Constrain & sandbox tool execution** | Per-request timeouts, a hard response-size cap, and capped retries with jittered backoff (`client.py`). Run the process under seccomp/AppArmor/SELinux or in a container for OS-level isolation (see below). |
+| **Constrain & sandbox tool execution** | Per-request timeouts, a hard response-size cap (shared `enforce_size_cap`; the TUI page fetcher enforces it **while streaming**, aborting an oversized download before it is fully buffered), and capped retries with jittered backoff (`client.py`). Run the process under seccomp/AppArmor/SELinux or in a container for OS-level isolation (see below). |
 | **Sign & verify messages (transport)** | stdio mode is local-trusted. The optional HTTP transport **refuses to start without a bearer token**, binds to localhost by default, and rejects any request lacking the exact `Authorization: Bearer <token>` header. Terminate TLS at a reverse proxy in front of it. |
 | **Filter & monitor outputs / chained execution** | Perplexity responses are treated as **untrusted input** to the next stage. `deep_research` scans retrieved snippets for indirect-prompt-injection patterns and surfaces them in `security_flags`. Citations are taken only from API metadata, never from model free-text. |
-| **Instrument for logging & detection** | A structured JSON audit log (`security.py`) records every tool call and result with redacted parameters, a result hash, and validation status — suitable for SIEM ingestion. |
+| **Instrument for logging & detection** | A structured JSON audit log (`security.py`) records every tool call and result with redacted parameters, a result hash, and validation status — suitable for SIEM ingestion. A single `RequestGuard` pairs the rate limiter with the audit log, so the TUI's commands and its background `/task` monitors are logged on the same path as the MCP tools rather than slipping past it. |
 | **Track & patch vulnerabilities** | Pinned deps + `uv.lock`; CI runs `pip-audit` on every push. Enable Renovate/Dependabot on the GitHub mirror to automate updates. |
-| **DoS / fatigue resistance** | A token-bucket rate limiter (`rate_per_minute` / `rate_burst`), bounded sub-question counts, input-size caps, and request timeouts. |
+| **DoS / fatigue resistance** | A token-bucket rate limiter (`rate_per_minute` / `rate_burst`) that — via `RequestGuard` — meters the MCP tools, the TUI commands, and background `/task` probes alike, plus bounded sub-question counts, input-size caps, and request timeouts. The TUI's local store can be bounded with per-Space retention caps (`PERPLEXITY_MAX_HISTORY_PER_SPACE` / `PERPLEXITY_MAX_TABS_PER_SPACE`). |
 | **Access control / token security** | `PERPLEXITY_API_KEY` is loaded server-side from the environment only; the server fails fast if it is absent. No token passthrough. |
 
 ## Interactive TUI page fetcher (added egress surface)
@@ -52,14 +52,19 @@ fetcher applies SSRF + DoS controls mirroring the API client:
 - **Untrusted-output handling** — extracted page text is run through the same
   indirect-prompt-injection scan as `deep_research`; matches are surfaced to the user
   before the text is sent to Sonar.
-- **Audit** — fetches share the TUI's `TokenBucket` rate limiter and audit logger.
+- **Audit & rate limit** — the TUI's commands, page fetches, and background
+  `/task` probes all pass through one `RequestGuard` that charges the
+  `TokenBucket` and writes a redacted audit record, so the interactive surface is
+  metered and logged just like the MCP tools.
 
 **Residual risk:** a DNS-rebinding TOCTOU window exists between resolution and
 connect (we validate the resolved IPs, then connect by hostname for correct TLS).
 With `fetch_allow_private=False` the blast radius is "publicly routable internet
 only". Operators who fetch untrusted URLs should still run the TUI behind a filtering
 egress proxy. The TUI's local SQLite store (history/tabs/Spaces) holds only the
-user's own artifacts — no secrets.
+user's own artifacts — no secrets — and its growth can be bounded with the
+per-Space retention caps (`PERPLEXITY_MAX_HISTORY_PER_SPACE` /
+`PERPLEXITY_MAX_TABS_PER_SPACE`; default: unbounded, i.e. nothing is deleted).
 
 ## Secret handling
 
@@ -83,3 +88,7 @@ Please report security issues privately to the maintainer rather than opening a
 public issue: open a confidential issue on the canonical Codeberg repo, or contact
 the maintainer directly. Include reproduction steps and affected version. Please
 allow reasonable time for a fix before public disclosure.
+
+---
+
+*Proudly Made in Nebraska. Go Big Red! 🌽 <https://xkcd.com/2347/>*
