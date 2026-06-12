@@ -1,3 +1,5 @@
+import asyncio
+
 from perplexity_agent.tasks import MonitorTask, TaskManager
 
 
@@ -50,3 +52,54 @@ async def test_add_and_remove_tracks_tasks():
     assert removed is True
     assert removed_again is False
     await mgr.aclose()
+
+
+class _ErroringAssistant:
+    """Raises on the first probe, then succeeds — to prove the loop survives."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def search(self, _query, max_results=5):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("transient 503")
+        return [{"url": "https://ok.example"}]
+
+
+async def test_loop_survives_transient_error_and_notifies():
+    # A transient error on one probe must not kill the monitor: the loop reports
+    # it and keeps running so the next interval can succeed.
+    assistant = _ErroringAssistant()
+    msgs = []
+    mgr = TaskManager(assistant, _FakeFetcher(), msgs.append)
+    mgr.add("search", "widgets", 0.001)
+    # Give the loop time to hit the error and then run again.
+    for _ in range(100):
+        await asyncio.sleep(0.005)
+        if assistant.calls >= 2:
+            break
+    await mgr.aclose()
+    assert assistant.calls >= 2  # ran again after the failure
+    assert any("error" in m and "transient 503" in m for m in msgs)
+
+
+async def test_aclose_awaits_inflight_probe_before_returning():
+    # aclose() must await cancelled handles so an in-flight probe finishes
+    # unwinding before the caller closes the shared clients it uses.
+    started = asyncio.Event()
+    released = asyncio.Event()
+
+    class _SlowAssistant:
+        async def search(self, _query, max_results=5):
+            started.set()
+            await asyncio.sleep(10)  # parked until cancelled
+            released.set()  # only reached if cancellation is not awaited away
+            return []
+
+    mgr = TaskManager(_SlowAssistant(), _FakeFetcher(), lambda _m: None)
+    handle = mgr.add("search", "widgets", 999)._handle
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await mgr.aclose()
+    assert handle is not None and handle.done()
+    assert not released.is_set()
