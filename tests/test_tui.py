@@ -88,7 +88,7 @@ async def test_open_creates_tab(tui_settings, monkeypatch):
             assert app._current is not None
             assert app._current.title == "Example"
             # Tab bar reflects the open tab.
-            assert "Example" in str(app.query_one("#tabbar", Static).renderable)
+            assert "Example" in str(app.query_one("#tabbar", Static).render())
 
 
 async def test_space_switch_creates_space(tui_settings):
@@ -243,7 +243,7 @@ async def test_tabbar_escapes_markup_in_titles(tui_settings):
     async with app.run_test() as pilot:
         app._refresh_tabbar()
         await pilot.pause()  # force a render; an unescaped title would raise here
-        rendered = str(app.query_one("#tabbar", Static).renderable)
+        rendered = str(app.query_one("#tabbar", Static).render())
         assert "[2026]" in rendered  # shown literally, not parsed as a style tag
 
 
