@@ -29,7 +29,7 @@ operating-system account the server runs under.
 | **Filter & monitor outputs / chained execution** | Perplexity responses are treated as **untrusted input** to the next stage. `deep_research` scans retrieved snippets for indirect-prompt-injection patterns and surfaces them in `security_flags`. Citations are taken only from API metadata, never from model free-text. |
 | **Instrument for logging & detection** | A structured JSON audit log (`security.py`) records every tool call and result with redacted parameters, a result hash, validation status, a per-call **correlation id** (shared by the `tool_call`/`tool_result` pair), **latency** (`duration_ms`), and **token usage** when the API reports it — suitable for SIEM ingestion. |
 | **Track & patch vulnerabilities** | Pinned deps + `uv.lock`; CI runs `pip-audit` on every push and Dependabot is enabled. GitHub Actions are **pinned to commit SHAs** (not retargetable tags), and the gitleaks secret scan covers the **full git history**, not just the worktree. |
-| **DoS / fatigue resistance** | A token-bucket rate limiter (`rate_per_minute` / `rate_burst`), bounded sub-question counts, input-size caps, and request timeouts. |
+| **DoS / fatigue resistance** | A token-bucket rate limiter (`rate_per_minute` / `rate_burst`) that — via `RequestGuard` — meters the MCP tools, the TUI commands, and background `/task` probes alike, plus bounded sub-question counts, input-size caps, and request timeouts. The TUI's local store is bounded by per-Space retention caps (`PERPLEXITY_MAX_TABS_PER_SPACE` / `PERPLEXITY_MAX_HISTORY_PER_SPACE`). |
 | **Access control / token security** | `PERPLEXITY_API_KEY` is loaded server-side from the environment only; the server fails fast if it is absent. No token passthrough. |
 
 ## Interactive TUI page fetcher (added egress surface)
@@ -63,7 +63,10 @@ fetcher applies SSRF + DoS controls mirroring the API client:
 - **Untrusted-output handling** — extracted page text is run through the same
   indirect-prompt-injection scan as `deep_research`; matches are surfaced to the user
   before the text is sent to Sonar.
-- **Audit** — fetches share the TUI's `TokenBucket` rate limiter and audit logger.
+- **Audit & rate limit** — the TUI's commands, page fetches, and background
+  `/task` probes pass through one `RequestGuard` that charges the `TokenBucket`
+  and writes a redacted audit record, so the interactive surface is metered and
+  logged like the MCP tools.
 
 **Residual risk:** with the connection pinned to the validated IP, the classic
 DNS-rebinding TOCTOU window is closed. What remains is by design: the fetcher will
@@ -73,7 +76,9 @@ who fetch untrusted URLs should still run the TUI behind a filtering egress prox
 The TUI's local SQLite store (history/tabs/Spaces) holds only the user's own
 artifacts — no secrets. It is still browsing history, so the file is created
 owner-only (0600, directory 0700), tabs are deduplicated per space+URL, and each
-space retains only the newest 50 tabs.
+space retains only the most-recent tabs (default 50, configurable). Conversation
+history is unbounded by default — it is never auto-deleted — but an operator can
+cap it with `PERPLEXITY_MAX_HISTORY_PER_SPACE`.
 
 ## Secret handling
 
