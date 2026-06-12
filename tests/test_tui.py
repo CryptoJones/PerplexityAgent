@@ -234,6 +234,36 @@ async def test_space_listing(tui_settings):
         assert _content_lines(app)
 
 
+async def test_tabbar_escapes_markup_in_titles(tui_settings):
+    # An untrusted page title with Rich-markup metacharacters must not raise
+    # MarkupError or inject styling when the tab bar renders.
+    app = CometApp(tui_settings)
+    app._open_tabs = [_tab("[2026] Best [GPU] deals", "https://x")]
+    app._current = app._open_tabs[0]
+    async with app.run_test() as pilot:
+        app._refresh_tabbar()
+        await pilot.pause()  # force a render; an unescaped title would raise here
+        rendered = str(app.query_one("#tabbar", Static).renderable)
+        assert "[2026]" in rendered  # shown literally, not parsed as a style tag
+
+
+async def test_search_surfaces_error_without_crashing(tui_settings):
+    # If one of the two concurrent /search calls fails, the error is surfaced and
+    # the app keeps running (no orphaned coroutine / unhandled crash).
+    app = CometApp(tui_settings)
+    with respx.mock:
+        respx.post("https://api.perplexity.ai/search").mock(
+            return_value=httpx.Response(500, json={"error": "boom"})
+        )
+        respx.post("https://api.perplexity.ai/chat/completions").mock(
+            return_value=_chat_reply("answer")
+        )
+        async with app.run_test() as pilot:
+            await _submit(app, pilot, "/search widgets")
+            text = "\n".join(str(line) for line in _content_lines(app))
+    assert "error" in text.lower() or "perplexity" in text.lower()
+
+
 def _tab(title, url):
     from perplexity_agent.assistant import Tab
 

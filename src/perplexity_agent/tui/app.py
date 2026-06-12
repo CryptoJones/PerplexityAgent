@@ -12,9 +12,12 @@ one :class:`Assistant`, and one :class:`TaskManager`, sharing them across handle
 
 from __future__ import annotations
 
+import asyncio
 import time
+from typing import cast, get_args
 
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -26,8 +29,12 @@ from ..config import Settings, load_settings
 from ..fetch import FetchError, PageFetcher
 from ..memory import Store, StoredTab
 from ..research import deep_research
-from ..security import AuditLogger, RateLimitError, TokenBucket
-from ..tasks import TaskManager
+from ..security import AuditLogger, RateLimitError, RequestGuard, TokenBucket
+from ..tasks import TaskKind, TaskManager
+
+# How many of the most-recent open tabs to fold into an assistant prompt as
+# context. Bounds prompt size (and API cost) so it doesn't grow with every /open.
+_MAX_CONTEXT_TABS = 3
 
 _HELP = """\
 # Comet-in-the-terminal — commands
@@ -72,11 +79,16 @@ class CometApp(App[None]):
         self._fetcher = PageFetcher(self._settings)
         self._store = Store.from_settings(self._settings)
         self._assistant = Assistant(self._client)
-        self._tasks = TaskManager(self._assistant, self._fetcher, self._notify)
         self._bucket = TokenBucket(
             self._settings.rate_per_minute, self._settings.rate_burst
         )
         self._audit = AuditLogger(self._settings.audit_log_path)
+        # One gate (rate limit + audit) shared by interactive commands and the
+        # background monitor tasks, so neither path can skip either control.
+        self._guard = RequestGuard(self._bucket, self._audit)
+        self._tasks = TaskManager(
+            self._assistant, self._fetcher, self._notify, guard=self._guard
+        )
         self._space = "default"
         self._open_tabs: list[Tab] = []
         self._current: Tab | None = None
@@ -122,7 +134,9 @@ class CometApp(App[None]):
             parts = []
             for i, t in enumerate(self._open_tabs):
                 mark = "*" if t is self._current else " "
-                parts.append(f"{mark}{i + 1}:{t.title[:22]}")
+                # Page titles are untrusted: escape Rich markup so a title like
+                # "[2026] deals" can't raise MarkupError or inject styling.
+                parts.append(f"{mark}{i + 1}:{escape(t.title[:22])}")
             label = "  ".join(parts)
         self.query_one("#tabbar", Static).update(label)
 
@@ -167,17 +181,21 @@ class CometApp(App[None]):
         if handler is None:
             self._notify(f"Unknown command /{cmd}. Try /help.")
             return
-        self._bucket.acquire()
+        self._guard.acquire("command", command=cmd.lower())
         await handler(rest)
+
+    def _context_tabs(self) -> list[Tab]:
+        """The most-recent open tabs to send as assistant context (capped)."""
+        return self._open_tabs[-_MAX_CONTEXT_TABS:]
 
     # --- assistant (bare text) --------------------------------------------
     async def _assist(self, question: str) -> None:
-        self._bucket.acquire()
+        self._guard.acquire("assist")
         self._chat().write(Text(f"› {question}", style="bold cyan"))
         self._store.add_message("user", question, now=time.time(), space=self._space)
         history = self._store.history(space=self._space, limit=20)[:-1]
         reply = await self._assistant.answer(
-            question, context=self._open_tabs, history=history
+            question, context=self._context_tabs(), history=history
         )
         self._write_reply(self._chat(), reply)
         self._store.add_message("assistant", reply.text, now=time.time(), space=self._space)
@@ -191,11 +209,22 @@ class CometApp(App[None]):
             self._notify("Usage: /search <query>")
             return
         self._content().write(Text(f"Searching: {rest}", style="bold"))
-        results = await self._assistant.search(rest)
+        # The ranked results and the grounded answer are independent calls — run
+        # them concurrently instead of paying both round trips in series.
+        # return_exceptions=True so a failure in one doesn't orphan the other
+        # (no "exception never retrieved"); surface the first error to _dispatch.
+        results, reply = await asyncio.gather(
+            self._assistant.search(rest),
+            self._assistant.answer(rest, context=self._context_tabs()),
+            return_exceptions=True,
+        )
+        if isinstance(results, BaseException):
+            raise results
+        if isinstance(reply, BaseException):
+            raise reply
         lines = [f"{i + 1}. [{r.get('title') or r.get('url')}]({r.get('url')})"
                  for i, r in enumerate(results)]
         self._content().write(Markdown("\n".join(lines) or "_No results._"))
-        reply = await self._assistant.answer(rest, context=self._open_tabs)
         self._write_reply(self._content(), reply)
 
     async def _cmd_open(self, rest: str) -> None:
@@ -292,9 +321,10 @@ class CometApp(App[None]):
         self._notify(f"Switched to space '{rest}'.")
 
     async def _cmd_task(self, rest: str) -> None:
+        kinds = get_args(TaskKind)  # single source of truth for the valid kinds
         parts = rest.split(maxsplit=2)
-        if len(parts) < 3 or parts[0] not in ("search", "fetch"):
-            self._notify("Usage: /task search|fetch <seconds> <target>")
+        if len(parts) < 3 or parts[0] not in kinds:
+            self._notify(f"Usage: /task {'|'.join(kinds)} <seconds> <target>")
             return
         kind, interval_s, target = parts[0], parts[1], parts[2]
         try:
@@ -302,7 +332,7 @@ class CometApp(App[None]):
         except ValueError:
             self._notify("Interval must be a number of seconds.")
             return
-        task = self._tasks.add(kind, target, interval)  # type: ignore[arg-type]
+        task = self._tasks.add(cast(TaskKind, kind), target, interval)
         self._notify(f"Started task {task.id}: {kind} every {interval:g}s on '{target}'.")
 
     async def _cmd_untask(self, rest: str) -> None:

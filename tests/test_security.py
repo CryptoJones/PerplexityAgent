@@ -3,12 +3,34 @@ import time
 import pytest
 
 from perplexity_agent.security import (
+    AuditLogger,
     RateLimitError,
+    RequestGuard,
     TokenBucket,
     content_hash,
     redact,
     scan_for_injection,
 )
+
+
+def test_request_guard_audits_each_call(tmp_path):
+    log = tmp_path / "audit.log"
+    guard = RequestGuard(TokenBucket(rate_per_minute=6000, burst=10), AuditLogger(str(log)))
+    guard.acquire("command", command="search")
+    guard.record("command_result", ok=True)
+    lines = log.read_text().splitlines()
+    assert any('"event": "command"' in ln and '"command": "search"' in ln for ln in lines)
+    assert any('"event": "command_result"' in ln for ln in lines)
+
+
+def test_request_guard_rate_limit_is_audited_then_raised(tmp_path):
+    log = tmp_path / "audit.log"
+    guard = RequestGuard(TokenBucket(rate_per_minute=1, burst=1), AuditLogger(str(log)))
+    guard.acquire("assist")  # spends the only token
+    with pytest.raises(RateLimitError):
+        guard.acquire("assist")
+    lines = log.read_text().splitlines()
+    assert any('"event": "rate_limited"' in ln and '"blocked": "assist"' in ln for ln in lines)
 
 
 def test_redact_dict_secret_keys():
