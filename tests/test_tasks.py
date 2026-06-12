@@ -1,3 +1,8 @@
+import asyncio
+
+import pytest
+
+from perplexity_agent.security import AuditLogger, RateLimitError, RequestGuard, TokenBucket
 from perplexity_agent.tasks import MonitorTask, TaskManager
 
 
@@ -11,6 +16,39 @@ class _FakeAssistant:
 
 class _FakeFetcher:
     pass
+
+
+async def test_probe_goes_through_the_guard():
+    # With a guard whose bucket is exhausted, a probe is rate-limited instead of
+    # making an unmetered, unaudited API/web call.
+    guard = RequestGuard(TokenBucket(rate_per_minute=1, burst=1), AuditLogger())
+    guard.acquire("warmup")  # drain the only token
+    assistant = _FakeAssistant([[{"url": "https://a.com"}]])
+    mgr = TaskManager(assistant, _FakeFetcher(), lambda _m: None, guard=guard)
+    task = MonitorTask(id=1, kind="search", target="widgets", interval_s=999)
+    with pytest.raises(RateLimitError):
+        await mgr.run_once(task)
+
+
+async def test_aclose_awaits_inflight_probe_before_returning():
+    # aclose() must await cancelled handles so an in-flight probe finishes
+    # unwinding before the caller closes the shared clients it uses.
+    started = asyncio.Event()
+    released = asyncio.Event()
+
+    class _SlowAssistant:
+        async def search(self, _query, max_results=5):
+            started.set()
+            await asyncio.sleep(10)  # parked until cancelled
+            released.set()  # only reached if cancellation is not awaited away
+            return []
+
+    mgr = TaskManager(_SlowAssistant(), _FakeFetcher(), lambda _m: None)
+    handle = mgr.add("search", "widgets", 999)._handle
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await mgr.aclose()
+    assert handle is not None and handle.done()
+    assert not released.is_set()
 
 
 async def test_run_once_notifies_on_first_then_change():

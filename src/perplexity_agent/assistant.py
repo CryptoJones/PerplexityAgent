@@ -234,18 +234,27 @@ class Assistant:
         try:
             parsed = json.loads(_content(resp))
             raw_groups = parsed.get("groups", [])
-        except (json.JSONDecodeError, AttributeError, TypeError):
+        except (ValueError, AttributeError, TypeError):
+            # ValueError covers json.JSONDecodeError AND the "Unexpected Sonar
+            # response shape" ValueError that _content() raises on a body missing
+            # choices/message — so a malformed response yields [], not a crash.
+            raw_groups = []
+        if not isinstance(raw_groups, list):
             raw_groups = []
 
+        # json_schema response_format is best-effort, so every group/field is
+        # validated defensively: a non-conforming shape yields fewer groups, never
+        # an uncaught AttributeError/TypeError.
         out: list[dict[str, Any]] = []
         for g in raw_groups:
-            idxs = [
-                i
-                for i in g.get("tab_indexes", [])
-                if isinstance(i, int) and 0 <= i < len(tabs)
-            ]
+            if not isinstance(g, dict):
+                continue
+            raw_idxs = g.get("tab_indexes", [])
+            if not isinstance(raw_idxs, list):
+                continue
+            idxs = [i for i in raw_idxs if isinstance(i, int) and 0 <= i < len(tabs)]
             if idxs:
-                out.append({"name": g.get("name", "Group"), "tabs": [tabs[i] for i in idxs]})
+                out.append({"name": str(g.get("name", "Group")), "tabs": [tabs[i] for i in idxs]})
         return out
 
     def plan_task(self, goal: str, steps: int = 5) -> list[str]:

@@ -134,3 +134,31 @@ class AuditLogger:
         """Emit one audit event. All fields pass through secret redaction."""
         payload = {"event": event, **{k: redact(v) for k, v in fields.items()}}
         self._logger.info(json.dumps(payload, default=str, sort_keys=True))
+
+
+class RequestGuard:
+    """Wires the token-bucket rate limit and the audit log together for a surface.
+
+    The MCP server has its own inline guard (with per-call correlation ids). This
+    is the equivalent for the surfaces that previously had neither half wired up:
+    the interactive TUI's commands and its background monitor tasks. Going through
+    one object means a new TUI command or task can't charge a rate-limit token
+    without also leaving an audit trail, or vice versa.
+    """
+
+    def __init__(self, bucket: TokenBucket, audit: AuditLogger) -> None:
+        self._bucket = bucket
+        self._audit = audit
+
+    def acquire(self, event: str, **fields: object) -> None:
+        """Charge one token and audit the call; on rate-limit audit then re-raise."""
+        try:
+            self._bucket.acquire()
+        except RateLimitError:
+            self._audit.record("rate_limited", blocked=event, **fields)
+            raise
+        self._audit.record(event, **fields)
+
+    def record(self, event: str, **fields: object) -> None:
+        """Audit an event without charging a token (e.g. a command result)."""
+        self._audit.record(event, **fields)
