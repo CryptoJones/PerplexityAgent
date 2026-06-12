@@ -9,37 +9,49 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref to save CI minutes.
+# Cancel superseded runs on the same ref to save CI minutes — but never on the
+# default branch, so every commit that lands on main keeps a completed run on
+# record (a fast follow-up push must not cancel main's test/security history).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   lint:
-    name: Lint (ruff)
+    name: Lint (ruff, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv python install 3.12
-      - run: uv sync --extra dev --extra tui --python 3.12
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --extra dev --extra tui --python ${{ matrix.python-version }}
       - name: Ruff lint
         run: uv run ruff check --output-format=github .
 
   typecheck:
-    name: Type check (mypy strict)
+    name: Type check (mypy strict, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv python install 3.12
-      - run: uv sync --extra dev --extra tui --python 3.12
+      - run: uv python install ${{ matrix.python-version }}
+      # Resolve per interpreter so version-marked deps / type stubs are checked
+      # under each supported Python, not just one.
+      - run: uv sync --extra dev --extra tui --python ${{ matrix.python-version }}
       - name: mypy
         run: uv run mypy src
 
@@ -73,8 +85,8 @@ jobs:
           path: coverage.xml
           if-no-files-found: error
 
-  security:
-    name: Security (audit + secrets)
+  core-install:
+    name: Core install (no tui extra)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,10 +95,41 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install 3.12
-      - run: uv sync --extra dev --extra tui --python 3.12
+      # Deliberately NO --extra tui: this is what plain `pip install
+      # perplexity-agent` users get. Catches an accidental top-level
+      # textual/selectolax import sneaking into a core module.
+      - run: uv sync --extra dev --python 3.12
+      - name: Import core modules without the tui extra
+        run: >
+          uv run python -c "import perplexity_agent.__main__,
+          perplexity_agent.server, perplexity_agent.client,
+          perplexity_agent.research, perplexity_agent.assistant,
+          perplexity_agent.fetch, perplexity_agent.tasks"
+      - name: Run non-tui tests against the core env
+        run: uv run pytest -q --ignore=tests/test_tui.py
+
+  security:
+    name: Security (audit + secrets, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install ${{ matrix.python-version }}
+      # Resolve per interpreter so a CVE in a version-marked dependency is
+      # audited under every supported Python, not just one.
+      - run: uv sync --extra dev --extra tui --python ${{ matrix.python-version }}
       - name: Dependency vulnerability audit (pip-audit)
         run: uv run pip-audit
       - name: Secret scan (gitleaks)
+        # The repo contents are identical across the matrix; scan once.
+        if: matrix.python-version == '3.12'
         run: |
           docker run --rm -v "${{ github.workspace }}:/repo" \
             ghcr.io/gitleaks/gitleaks:latest \
