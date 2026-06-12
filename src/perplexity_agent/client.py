@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from .config import Settings
+from .security import enforce_size_cap
 
 # Status codes worth retrying (transient): 429 + 5xx.
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -99,12 +100,7 @@ class PerplexityClient:
         )
 
     def _enforce_size(self, resp: httpx.Response) -> None:
-        body = resp.content
-        if len(body) > self._settings.max_response_bytes:
-            raise PerplexityError(
-                f"Response too large ({len(body)} bytes > "
-                f"{self._settings.max_response_bytes} cap); rejected as a DoS guard."
-            )
+        enforce_size_cap(len(resp.content), self._settings.max_response_bytes, PerplexityError)
 
     async def search(
         self, query: str, max_results: int = 5, max_tokens_per_page: int = 1024

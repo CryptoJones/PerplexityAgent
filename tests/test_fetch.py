@@ -127,6 +127,22 @@ async def test_oversized_body_rejected(monkeypatch, settings):
                 await fetcher.fetch("https://example.com/")
 
 
+async def test_redirect_without_location_reports_clearly(monkeypatch, settings):
+    # A 3xx with no Location header used to be misreported as "Too many redirects";
+    # it must now name the real problem.
+    import perplexity_agent.fetch as fetch_mod
+
+    monkeypatch.setattr(
+        fetch_mod.socket, "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+    with respx.mock:
+        respx.get("https://example.com/").mock(return_value=httpx.Response(301))
+        async with PageFetcher(settings) as fetcher:
+            with pytest.raises(FetchError, match="no Location header"):
+                await fetcher.fetch("https://example.com/")
+
+
 async def test_injection_flags_surface(monkeypatch, settings):
     import perplexity_agent.fetch as fetch_mod
 

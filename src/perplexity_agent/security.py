@@ -73,6 +73,19 @@ def content_hash(value: object) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def enforce_size_cap(nbytes: int, cap: int, exc_type: type[Exception]) -> None:
+    """Raise ``exc_type`` if ``nbytes`` exceeds the response-size ``cap``.
+
+    The single home for the project's DoS byte-cap guard, shared by the API
+    client (post-hoc on the buffered body) and the page fetcher (incrementally
+    while streaming), so the check and its message can't drift apart.
+    """
+    if nbytes > cap:
+        raise exc_type(
+            f"Response too large ({nbytes} bytes > {cap} cap); rejected as a DoS guard."
+        )
+
+
 class RateLimitError(RuntimeError):
     """Raised when the token-bucket rate limit is exceeded."""
 

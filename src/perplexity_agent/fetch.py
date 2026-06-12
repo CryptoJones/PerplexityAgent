@@ -2,8 +2,9 @@
 
 This is the only egress path in the project other than ``api.perplexity.ai`` and
 it is reachable **solely from the interactive TUI**, never from an MCP tool. It
-mirrors the DoS guards already in ``client.py`` (per-request timeout, response-size
-cap) and adds the controls a fetch of *attacker-influenceable* URLs needs:
+reuses the DoS guards already in ``client.py`` (per-request timeout, and the shared
+``enforce_size_cap`` response-size guard) and adds the controls a fetch of
+*attacker-influenceable* URLs needs:
 
 - scheme allowlist (``http`` / ``https`` only) — no ``file://``, ``gopher://`` …;
 - DNS resolution + rejection of private / loopback / link-local / reserved IPs
@@ -20,6 +21,7 @@ by default so the blast radius is "public internet only".
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from dataclasses import dataclass, field
@@ -28,7 +30,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .config import Settings
-from .security import scan_for_injection
+from .security import enforce_size_cap, scan_for_injection
 
 # Only these schemes may be fetched. Anything else (file, ftp, gopher, data …) is
 # rejected outright.
@@ -78,12 +80,19 @@ def _is_public_ip(raw: str) -> bool:
     return ip.is_global
 
 
-def _assert_host_allowed(host: str, *, allow_private: bool) -> None:
-    """Resolve ``host`` and raise unless every resolved IP is allowed."""
+async def _assert_host_allowed(host: str, *, allow_private: bool) -> None:
+    """Resolve ``host`` and raise unless every resolved IP is allowed.
+
+    ``getaddrinfo`` is a blocking syscall, so it runs in a worker thread to keep
+    the (single) event loop the TUI shares with all fetches and monitor tasks
+    responsive even when a nameserver is slow.
+    """
     if not host:
         raise FetchError("URL has no host.")
     try:
-        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        infos = await asyncio.to_thread(
+            socket.getaddrinfo, host, None, proto=socket.IPPROTO_TCP
+        )
     except socket.gaierror as exc:
         raise FetchError(f"Could not resolve host {host!r}: {exc}") from exc
 
@@ -100,14 +109,14 @@ def _assert_host_allowed(host: str, *, allow_private: bool) -> None:
             )
 
 
-def _validate_url(url: str, *, allow_private: bool) -> str:
+async def _validate_url(url: str, *, allow_private: bool) -> str:
     """Validate scheme + host of ``url``; return the normalized URL."""
     parts = urlsplit(url)
     if parts.scheme.lower() not in _ALLOWED_SCHEMES:
         raise FetchError(
             f"Refusing to fetch scheme {parts.scheme!r}; only http/https are allowed."
         )
-    _assert_host_allowed(parts.hostname or "", allow_private=allow_private)
+    await _assert_host_allowed(parts.hostname or "", allow_private=allow_private)
     return url
 
 
@@ -175,42 +184,48 @@ class PageFetcher:
         """Fetch ``url`` (following safe redirects) and return cleaned page text."""
         allow_private = self._settings.fetch_allow_private
         requested = url
-        current = _validate_url(url, allow_private=allow_private)
+        current = await _validate_url(url, allow_private=allow_private)
 
-        resp: httpx.Response | None = None
+        # Stream so the byte cap can abort an oversized body *before* it is fully
+        # buffered, and so redirect responses never download their body at all.
         for _ in range(_MAX_REDIRECTS + 1):
-            resp = await self._client.get(current)
-            if resp.is_redirect and resp.has_redirect_location:
-                # Re-validate the redirect target before following it.
-                current = str(resp.url.join(resp.headers["location"]))
-                _validate_url(current, allow_private=allow_private)
-                continue
-            break
-        else:
-            raise FetchError(f"Too many redirects (>{_MAX_REDIRECTS}) fetching {requested!r}.")
+            async with self._client.stream("GET", current) as resp:
+                if resp.is_redirect:
+                    if not resp.has_redirect_location:
+                        raise FetchError(
+                            f"Redirect (HTTP {resp.status_code}) with no Location header "
+                            f"fetching {current!r}."
+                        )
+                    # Re-validate the redirect target before following it.
+                    current = str(resp.url.join(resp.headers["location"]))
+                    await _validate_url(current, allow_private=allow_private)
+                    continue
+                if resp.status_code >= 400:
+                    raise FetchError(f"Fetch failed: HTTP {resp.status_code} for {current!r}.")
 
-        if resp is None:  # pragma: no cover - the loop always assigns resp
-            raise FetchError(f"No response fetching {requested!r}.")
-        if resp.is_redirect:
-            raise FetchError(f"Too many redirects (>{_MAX_REDIRECTS}) fetching {requested!r}.")
-        if resp.status_code >= 400:
-            raise FetchError(f"Fetch failed: HTTP {resp.status_code} for {current!r}.")
+                body = await self._read_capped(resp)
+                encoding = resp.charset_encoding or "utf-8"
+                html = body.decode(encoding, errors="replace")
+                title, text = extract_text(html)
+                flags = scan_for_injection(f"{title} {text}")
+                return FetchedPage(
+                    requested_url=requested,
+                    final_url=str(resp.url),
+                    title=title,
+                    text=text,
+                    fetched_bytes=len(body),
+                    injection_flags=flags,
+                )
 
-        body = resp.content
-        if len(body) > self._settings.max_response_bytes:
-            raise FetchError(
-                f"Page too large ({len(body)} bytes > {self._settings.max_response_bytes} "
-                "cap); rejected as a DoS guard."
-            )
+        raise FetchError(f"Too many redirects (>{_MAX_REDIRECTS}) fetching {requested!r}.")
 
-        html = resp.text
-        title, text = extract_text(html)
-        flags = scan_for_injection(f"{title} {text}")
-        return FetchedPage(
-            requested_url=requested,
-            final_url=str(resp.url),
-            title=title,
-            text=text,
-            fetched_bytes=len(body),
-            injection_flags=flags,
-        )
+    async def _read_capped(self, resp: httpx.Response) -> bytes:
+        """Read the streamed body, aborting as soon as it exceeds the byte cap."""
+        cap = self._settings.max_response_bytes
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in resp.aiter_bytes():
+            total += len(chunk)
+            enforce_size_cap(total, cap, FetchError)
+            chunks.append(chunk)
+        return b"".join(chunks)
