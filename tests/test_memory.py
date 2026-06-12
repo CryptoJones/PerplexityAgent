@@ -62,13 +62,25 @@ def test_tabs_limit_caps_rows(tmp_path):
     s.close()
 
 
-def test_spaces_and_facts(tmp_path):
+def test_space_lookup_indexes_exist(tmp_path):
+    # history()/tabs() filter by space; the supporting indexes must be created so
+    # the lookups don't degrade to full scans as the tables grow.
+    s = _store(tmp_path)
+    names = {
+        r["name"]
+        for r in s._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        ).fetchall()
+    }
+    assert {"idx_conversations_space", "idx_tabs_space"} <= names
+    s.close()
+
+
+def test_spaces_create_is_idempotent(tmp_path):
     s = _store(tmp_path)
     s.create_space("research", now=1.0)
     s.create_space("research", now=2.0)  # idempotent
     assert "research" in s.spaces()
-    s.remember("user prefers concise answers", now=1.0)
-    assert s.facts() == ["user prefers concise answers"]
     s.close()
 
 

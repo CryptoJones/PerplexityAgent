@@ -1,4 +1,4 @@
-"""Local persistence for the TUI: conversation history, saved tabs, Spaces, facts.
+"""Local persistence for the TUI: conversation history, saved tabs, and Spaces.
 
 A dependency-free :mod:`sqlite3` store standing in for Comet's memory + Spaces. It
 lives under an XDG-style data directory by default (overridable via
@@ -36,11 +36,10 @@ CREATE TABLE IF NOT EXISTS spaces (
     name      TEXT PRIMARY KEY,
     created   REAL NOT NULL
 );
-CREATE TABLE IF NOT EXISTS facts (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    fact      TEXT NOT NULL,
-    created   REAL NOT NULL
-);
+-- history()/tabs() always filter by space and order by id; index both so the
+-- lookups stay fast as these append-only tables grow.
+CREATE INDEX IF NOT EXISTS idx_conversations_space ON conversations(space, id);
+CREATE INDEX IF NOT EXISTS idx_tabs_space ON tabs(space, id);
 """
 
 
@@ -61,7 +60,7 @@ class StoredTab:
 
 
 class Store:
-    """Thin sqlite wrapper for TUI history, tabs, Spaces, and facts.
+    """Thin sqlite wrapper for TUI history, tabs, and Spaces.
 
     ``now`` is injected (no implicit clock) so callers — and tests — control
     timestamps; the TUI passes ``time.time``.
@@ -139,16 +138,3 @@ class Store:
     def spaces(self) -> list[str]:
         rows = self._conn.execute("SELECT name FROM spaces ORDER BY name").fetchall()
         return [r["name"] for r in rows]
-
-    # --- facts (long-term memory) -----------------------------------------
-    def remember(self, fact: str, *, now: float) -> None:
-        self._conn.execute(
-            "INSERT INTO facts (fact, created) VALUES (?, ?)", (fact, now)
-        )
-        self._conn.commit()
-
-    def facts(self, *, limit: int = 100) -> list[str]:
-        rows = self._conn.execute(
-            "SELECT fact FROM facts ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [r["fact"] for r in rows]
