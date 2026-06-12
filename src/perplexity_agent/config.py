@@ -7,7 +7,7 @@ fails fast at startup if the key is absent (NSA: access control / token security
 
 from __future__ import annotations
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,9 +56,27 @@ class Settings(BaseSettings):
     # targets are denied by default (fetch_allow_private=False).
     fetch_user_agent: str = "PerplexityAgent-TUI/0.2 (+https://codeberg.org/CryptoJones/PerplexityAgent)"
     fetch_allow_private: bool = False
-    # Where the TUI keeps its sqlite store (history, tabs, spaces, facts). None ->
+    # Where the TUI keeps its sqlite store (history, tabs, spaces). None ->
     # an XDG-style default under the user's data dir, resolved in memory.py.
     store_path: str | None = None
+
+    # Per-Space retention caps for the local store. Tabs default to a recent-tab
+    # cache of 50 (a bounded browsing cache); conversation history defaults to
+    # unbounded (None) — a deployed instance never deletes a user's chat history
+    # unless its operator opts in. Set either to a positive integer to keep only
+    # the N most-recent rows per Space, or to nothing/blank to keep everything.
+    max_tabs_per_space: int | None = Field(default=50, gt=0)
+    max_history_per_space: int | None = Field(default=None, gt=0)
+
+    @field_validator("max_tabs_per_space", "max_history_per_space", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, v: object) -> object:
+        # A blank env var (e.g. `PERPLEXITY_MAX_HISTORY_PER_SPACE=` in a .env)
+        # means "unbounded" -> None, rather than failing int validation and
+        # crashing startup with a misleading error.
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
 
 def load_settings() -> Settings:
