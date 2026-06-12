@@ -211,10 +211,17 @@ class CometApp(App[None]):
         self._content().write(Text(f"Searching: {rest}", style="bold"))
         # The ranked results and the grounded answer are independent calls — run
         # them concurrently instead of paying both round trips in series.
+        # return_exceptions=True so a failure in one doesn't orphan the other
+        # (no "exception never retrieved"); surface the first error to _dispatch.
         results, reply = await asyncio.gather(
             self._assistant.search(rest),
             self._assistant.answer(rest, context=self._context_tabs()),
+            return_exceptions=True,
         )
+        if isinstance(results, BaseException):
+            raise results
+        if isinstance(reply, BaseException):
+            raise reply
         lines = [f"{i + 1}. [{r.get('title') or r.get('url')}]({r.get('url')})"
                  for i, r in enumerate(results)]
         self._content().write(Markdown("\n".join(lines) or "_No results._"))

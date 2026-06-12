@@ -66,6 +66,23 @@ async def test_search_command_routes(tui_settings):
             assert _content_lines(app)
 
 
+async def test_search_surfaces_error_without_crashing(tui_settings):
+    # If one of the two concurrent /search calls fails, the error is surfaced and
+    # the app keeps running (no orphaned coroutine / unhandled crash).
+    app = CometApp(tui_settings)
+    with respx.mock:
+        respx.post("https://api.perplexity.ai/search").mock(
+            return_value=httpx.Response(500, json={"error": "boom"})
+        )
+        respx.post("https://api.perplexity.ai/chat/completions").mock(
+            return_value=_chat_reply("answer")
+        )
+        async with app.run_test() as pilot:
+            await _submit(app, pilot, "/search widgets")
+            text = "\n".join(str(line) for line in _content_lines(app))
+    assert "error" in text.lower() or "perplexity" in text.lower()
+
+
 async def test_open_creates_tab(tui_settings, monkeypatch):
     import perplexity_agent.fetch as fetch_mod
 

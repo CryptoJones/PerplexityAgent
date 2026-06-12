@@ -99,6 +99,32 @@ async def test_loop_survives_transient_error_and_notifies():
     assert any("error" in m and "transient 503" in m for m in msgs)
 
 
+class _AlwaysFailingAssistant:
+    def __init__(self):
+        self.calls = 0
+
+    async def search(self, _query, max_results=5):
+        self.calls += 1
+        raise RuntimeError("still down")
+
+
+async def test_loop_does_not_spam_repeated_identical_errors():
+    # A persistent failure (same error every interval, e.g. a drained rate-limit
+    # bucket) must be reported once, not re-notified every tick.
+    assistant = _AlwaysFailingAssistant()
+    msgs = []
+    mgr = TaskManager(assistant, _FakeFetcher(), msgs.append)
+    mgr.add("search", "widgets", 0.001)
+    for _ in range(100):
+        await asyncio.sleep(0.005)
+        if assistant.calls >= 3:
+            break
+    await mgr.aclose()
+    assert assistant.calls >= 3  # it kept retrying
+    error_msgs = [m for m in msgs if "still down" in m]
+    assert len(error_msgs) == 1  # but only notified once
+
+
 async def test_aclose_awaits_inflight_probe_before_returning():
     # aclose() must await cancelled handles so an in-flight probe finishes
     # unwinding before the caller closes the shared clients it uses.

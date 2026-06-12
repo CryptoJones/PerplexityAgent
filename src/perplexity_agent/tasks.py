@@ -86,15 +86,22 @@ class TaskManager:
             await asyncio.gather(*handles, return_exceptions=True)
 
     async def _loop(self, task: MonitorTask) -> None:
+        last_error: str | None = None
         while True:
             try:
                 await self.run_once(task)
+                last_error = None  # recovered; a future failure is "new" again
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a monitor must survive transient errors
-                # A transient fetch/search failure must not kill the watch: report
-                # it and keep looping so the next interval retries.
-                self._notify(f"[task {task.id}] '{task.target}' error: {exc}")
+                # A transient fetch/search/rate-limit failure must not kill the
+                # watch: keep looping so the next interval retries. Only notify on
+                # a *new* error, so a persistent failure (e.g. a drained rate-limit
+                # bucket) doesn't spam the same line every interval.
+                msg = str(exc)
+                if msg != last_error:
+                    self._notify(f"[task {task.id}] '{task.target}' error: {msg}")
+                    last_error = msg
             await asyncio.sleep(task.interval_s)
 
     async def run_once(self, task: MonitorTask) -> bool:

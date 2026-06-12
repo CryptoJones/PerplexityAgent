@@ -71,7 +71,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
         result = await _client(ctx).search(
             args.query, args.max_results, args.max_tokens_per_page
         )
-        audit.record("tool_result", tool="perplexity_search", result_hash=content_hash(result))
+        guard.record("tool_result", tool="perplexity_search", result_hash=content_hash(result))
         return result
 
     @mcp.tool()
@@ -91,7 +91,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             messages.append({"role": "system", "content": args.system_prompt})
         messages.append({"role": "user", "content": args.question})
         result = await _client(ctx).chat(messages, model=args.model.value)
-        audit.record("tool_result", tool="sonar_ask", result_hash=content_hash(result))
+        guard.record("tool_result", tool="sonar_ask", result_hash=content_hash(result))
         return result
 
     @mcp.tool()
@@ -120,7 +120,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             model=args.model.value,
             max_results_per_subquestion=args.max_results_per_subquestion,
         )
-        audit.record(
+        guard.record(
             "tool_result",
             tool="deep_research",
             result_hash=content_hash(result),
