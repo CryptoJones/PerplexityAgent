@@ -56,9 +56,16 @@ class Settings(BaseSettings):
     # targets are denied by default (fetch_allow_private=False).
     fetch_user_agent: str = "PerplexityAgent-TUI/0.1 (+https://codeberg.org/CryptoJones/PerplexityAgent)"
     fetch_allow_private: bool = False
-    # Where the TUI keeps its sqlite store (history, tabs, spaces, facts). None ->
+    # Where the TUI keeps its sqlite store (history, tabs, spaces). None ->
     # an XDG-style default under the user's data dir, resolved in memory.py.
     store_path: str | None = None
+
+    # Optional retention caps for the local store, per Space. None (the default)
+    # means KEEP EVERYTHING — a deployed instance never deletes a user's data
+    # unless its operator explicitly opts in. When set to N, only the N most
+    # recent rows per Space are retained; older ones are pruned on write.
+    max_history_per_space: int | None = Field(default=None, gt=0)
+    max_tabs_per_space: int | None = Field(default=None, gt=0)
 
 
 def load_settings() -> Settings:

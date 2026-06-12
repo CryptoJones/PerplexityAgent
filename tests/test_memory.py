@@ -62,6 +62,65 @@ def test_tabs_limit_caps_rows(tmp_path):
     s.close()
 
 
+def test_retention_disabled_by_default_keeps_everything(tmp_path):
+    # The safe default: no retention cap means a deployed instance never deletes
+    # a user's history.
+    s = _store(tmp_path)
+    for i in range(50):
+        s.add_message("user", f"m{i}", now=float(i))
+    count = s._conn.execute("SELECT COUNT(*) AS n FROM conversations").fetchone()["n"]
+    assert count == 50
+    s.close()
+
+
+def test_history_retention_prunes_oldest_per_space(tmp_path):
+    # With a cap, only the N most-recent rows per Space survive; pruning is
+    # scoped to the Space being written, never another's.
+    s = Store(tmp_path / "store.db", max_history_per_space=3)
+    for i in range(6):
+        s.add_message("user", f"d{i}", now=float(i), space="default")
+    s.add_message("user", "keep-me", now=99.0, space="work")
+    default_rows = s._conn.execute(
+        "SELECT content FROM conversations WHERE space = 'default' ORDER BY id"
+    ).fetchall()
+    assert [r["content"] for r in default_rows] == ["d3", "d4", "d5"]
+    work_rows = s._conn.execute(
+        "SELECT content FROM conversations WHERE space = 'work'"
+    ).fetchall()
+    assert [r["content"] for r in work_rows] == ["keep-me"]  # other Space untouched
+    s.close()
+
+
+def test_tabs_retention_prunes_oldest(tmp_path):
+    s = Store(tmp_path / "store.db", max_tabs_per_space=2)
+    for i in range(5):
+        s.save_tab(StoredTab(f"T{i}", f"https://x/{i}", "page", "b"), now=float(i))
+    rows = s._conn.execute("SELECT url FROM tabs ORDER BY id").fetchall()
+    assert [r["url"] for r in rows] == ["https://x/3", "https://x/4"]
+    s.close()
+
+
+def test_legacy_facts_table_is_dropped(tmp_path):
+    # A store created with an old schema (with a facts table) is cleaned up on open.
+    import sqlite3
+
+    db = tmp_path / "store.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE facts (id INTEGER PRIMARY KEY, fact TEXT, created REAL)")
+    conn.execute("INSERT INTO facts (fact, created) VALUES ('stale', 1.0)")
+    conn.commit()
+    conn.close()
+    s = Store(db)  # opening runs the schema, which drops the legacy table
+    names = {
+        r["name"]
+        for r in s._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    assert "facts" not in names
+    s.close()
+
+
 def test_space_lookup_indexes_exist(tmp_path):
     # history()/tabs() filter by space; the supporting indexes must be created so
     # the lookups don't degrade to full scans as the tables grow.

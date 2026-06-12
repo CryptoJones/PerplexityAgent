@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS spaces (
 -- lookups stay fast as these append-only tables grow.
 CREATE INDEX IF NOT EXISTS idx_conversations_space ON conversations(space, id);
 CREATE INDEX IF NOT EXISTS idx_tabs_space ON tabs(space, id);
+-- Retire the legacy `facts` table. It was never read or written, so dropping it
+-- destroys no user data; this just cleans it out of stores created before it was
+-- removed from the schema.
+DROP TABLE IF EXISTS facts;
 """
 
 
@@ -66,8 +70,19 @@ class Store:
     timestamps; the TUI passes ``time.time``.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_history_per_space: int | None = None,
+        max_tabs_per_space: int | None = None,
+    ) -> None:
         self._path = Path(path)
+        # Retention caps. None means keep everything: nothing is ever deleted
+        # unless the operator explicitly opts in. This is the safe default for a
+        # deployed multi-user instance.
+        self._max_history = max_history_per_space
+        self._max_tabs = max_tabs_per_space
         if str(self._path) != ":memory:":
             self._path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._path))
@@ -78,10 +93,28 @@ class Store:
     @classmethod
     def from_settings(cls, settings: Settings) -> Store:
         path = settings.store_path or str(default_store_path())
-        return cls(path)
+        return cls(
+            path,
+            max_history_per_space=settings.max_history_per_space,
+            max_tabs_per_space=settings.max_tabs_per_space,
+        )
 
     def close(self) -> None:
         self._conn.close()
+
+    def _prune(self, table: str, space: str, keep: int | None) -> None:
+        """Delete all but the ``keep`` most-recent rows for ``space`` in ``table``.
+
+        No-op when ``keep`` is None (retention disabled). ``table`` is never user
+        input — it is a fixed literal from the caller — so the f-string is safe.
+        """
+        if keep is None:
+            return
+        self._conn.execute(
+            f"DELETE FROM {table} WHERE space = ? AND id NOT IN "  # noqa: S608 - fixed table name
+            f"(SELECT id FROM {table} WHERE space = ? ORDER BY id DESC LIMIT ?)",
+            (space, space, keep),
+        )
 
     # --- conversations -----------------------------------------------------
     def add_message(self, role: str, content: str, *, now: float, space: str = "default") -> None:
@@ -89,6 +122,7 @@ class Store:
             "INSERT INTO conversations (space, role, content, created) VALUES (?, ?, ?, ?)",
             (space, role, content, now),
         )
+        self._prune("conversations", space, self._max_history)
         self._conn.commit()
 
     def history(self, *, space: str = "default", limit: int = 50) -> list[dict[str, str]]:
@@ -105,6 +139,7 @@ class Store:
             "INSERT INTO tabs (space, title, url, kind, text, created) VALUES (?, ?, ?, ?, ?, ?)",
             (space, tab.title, tab.url, tab.kind, tab.text, now),
         )
+        self._prune("tabs", space, self._max_tabs)
         self._conn.commit()
 
     def tabs(self, *, space: str = "default", limit: int = 50) -> list[StoredTab]:
