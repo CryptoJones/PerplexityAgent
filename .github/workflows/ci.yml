@@ -73,6 +73,32 @@ jobs:
           path: coverage.xml
           if-no-files-found: error
 
+  conformance:
+    name: MCP conformance (live stdio)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --extra dev --extra tui --python 3.12
+      - name: Conformance suite
+        # mcp-conformance is a private repo, so this job is a graceful no-op until
+        # MCP_CONFORMANCE_TOKEN (a PAT with read access to it) is set in the repo's
+        # Actions secrets. Then it boots perplexity-agent over stdio and asserts the
+        # baseline contracts (see conformance.toml; a dummy API key lets it start).
+        env:
+          MCP_CONFORMANCE_TOKEN: ${{ secrets.MCP_CONFORMANCE_TOKEN }}
+        run: |
+          if [ -z "$MCP_CONFORMANCE_TOKEN" ]; then
+            echo "MCP_CONFORMANCE_TOKEN not set — skipping conformance suite."
+            exit 0
+          fi
+          uv pip install "git+https://x-access-token:${MCP_CONFORMANCE_TOKEN}@github.com/CryptoJones/mcp-conformance.git"
+          uv run mcp-conformance run -- -q
+
   security:
     name: Security (audit + secrets)
     runs-on: ubuntu-latest
