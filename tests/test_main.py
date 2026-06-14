@@ -44,6 +44,18 @@ def test_main_http_dispatches(monkeypatch, fake_settings):
     assert ran["http"] is True
 
 
+def test_main_transport_with_tui_is_rejected(monkeypatch, fake_settings):
+    # `--transport http tui` must error, not silently discard the flag and start
+    # an interactive UI on a headless host.
+    ran = {}
+    monkeypatch.setattr(cli, "_run_tui", lambda settings: ran.setdefault("tui", True))
+    monkeypatch.setattr(sys, "argv", ["perplexity-agent", "--transport", "http", "tui"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2  # argparse usage error
+    assert "tui" not in ran
+
+
 def test_stdio_server_exits_on_client_eof(tmp_path):
     """Lifecycle regression: when the MCP client closes the stdio pipe, the
     server process must exit instead of lingering deaf.

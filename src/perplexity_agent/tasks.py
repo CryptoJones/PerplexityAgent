@@ -16,7 +16,7 @@ from typing import Literal
 
 from .assistant import Assistant
 from .fetch import PageFetcher
-from .security import content_hash
+from .security import RequestGuard, content_hash
 
 Notify = Callable[[str], None]
 TaskKind = Literal["search", "fetch"]
@@ -49,10 +49,16 @@ class TaskManager:
         assistant: Assistant,
         fetcher: PageFetcher,
         notify: Notify,
+        guard: RequestGuard | None = None,
     ) -> None:
         self._assistant = assistant
         self._fetcher = fetcher
         self._notify = notify
+        # When set, every periodic probe goes through the same rate-limit + audit
+        # gate as interactive commands, so background watches can't make unmetered,
+        # unlogged API/web calls. A RateLimitError is just another probe failure
+        # that step() counts toward the give-up threshold.
+        self._guard = guard
         self._tasks: dict[int, MonitorTask] = {}
         self._next_id = 1
 
@@ -77,10 +83,14 @@ class TaskManager:
         return True
 
     async def aclose(self) -> None:
-        for task in list(self._tasks.values()):
-            if task._handle is not None:
-                task._handle.cancel()
+        handles = [t._handle for t in self._tasks.values() if t._handle is not None]
+        for handle in handles:
+            handle.cancel()
         self._tasks.clear()
+        # Await the cancelled handles so any in-flight probe finishes unwinding
+        # before the caller closes the shared fetcher/client they run against.
+        if handles:
+            await asyncio.gather(*handles, return_exceptions=True)
 
     async def _loop(self, task: MonitorTask) -> None:
         try:
@@ -136,6 +146,8 @@ class TaskManager:
         return changed
 
     async def _probe(self, task: MonitorTask) -> tuple[str, str]:
+        if self._guard is not None:
+            self._guard.acquire("task_probe", task_id=task.id, kind=task.kind)
         if task.kind == "search":
             results = await self._assistant.search(task.target, max_results=5)
             top = [r.get("url", "") for r in results]
