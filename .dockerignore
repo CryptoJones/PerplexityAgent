@@ -1,0 +1,27 @@
+# Build-context hygiene for any future container image.
+.git
+.github
+
+# Local virtualenvs / caches — an image should build its own.
+.venv
+venv
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.coverage
+*.egg-info
+build
+dist
+
+# Docs / meta — but KEEP README.md: pyproject declares
+# `readme = "README.md"`, so hatchling needs it to build the wheel.
+# (A selective `COPY pyproject.toml src ./` Dockerfile must ALSO copy
+#  README.md — this only covers the `COPY . .` pattern.)
+*.md
+!README.md
+LICENSE
+
+# Secrets / runtime artifacts must never enter an image layer.
+*.log
+.env
