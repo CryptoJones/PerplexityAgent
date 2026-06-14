@@ -93,5 +93,6 @@ select = ["E", "F", "I", "B", "UP", "S"]
 # S101 (assert) is fine in tests; handled per-file below.
 
 [tool.ruff.lint.per-file-ignores]
-# S101 asserts, S105/S106 "hardcoded password" false-positives on test fixtures.
-"tests/*" = ["S101", "S105", "S106"]
+# S101 asserts, S105/S106 "hardcoded password" false-positives on test fixtures,
+# SLF001 private-attr access in tests.
+"tests/*" = ["S101", "S105", "S106", "SLF001"]

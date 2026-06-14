@@ -51,6 +51,11 @@ class DeepResearchInput(_StrictModel):
     use_model_decomposition: bool = False
 
 
+class RetrieveInput(_StrictModel):
+    # The retrieve_key is a 24-char hex content hash from an offload envelope.
+    key: str = Field(..., min_length=1, max_length=128)
+
+
 def research_report_schema() -> dict[str, Any]:
     """JSON schema handed to Sonar via ``response_format`` for structured output.
 

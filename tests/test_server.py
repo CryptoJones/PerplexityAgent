@@ -32,11 +32,43 @@ def _text(result):
     return result.content[0].text
 
 
-async def test_list_tools_exposes_three():
+async def test_list_tools_exposes_all():
     mcp, _ = build_server(_settings())
     async with connect(mcp._mcp_server) as client:
         tools = sorted(t.name for t in (await client.list_tools()).tools)
-    assert tools == ["deep_research", "perplexity_search", "sonar_ask"]
+    assert tools == ["deep_research", "perplexity_search", "retrieve", "sonar_ask"]
+
+
+@respx.mock
+async def test_large_result_offloaded_and_retrievable():
+    # A result that overflows the (tiny, for the test) budget is bounded into a
+    # {truncated, retrieve_key} envelope; the retrieve tool fetches the original.
+    big = {"results": [{"url": f"https://a.com/{i}", "blob": "x" * 100} for i in range(50)]}
+    respx.post("https://api.perplexity.ai/search").mock(
+        return_value=httpx.Response(200, json=big)
+    )
+    settings = Settings(
+        api_key=SecretStr("pplx-testkey1234567890"),
+        max_retries=0,
+        rate_per_minute=6000,
+        rate_burst=1000,
+        max_tool_output_chars=300,
+    )
+    mcp, _ = build_server(settings)
+    async with connect(mcp._mcp_server) as client:
+        result = await client.call_tool("perplexity_search", {"query": "q"})
+        payload = json.loads(_text(result))
+        assert payload["truncated"] is True
+        key = payload["retrieve_key"]
+        fetched = json.loads(_text(await client.call_tool("retrieve", {"key": key})))
+    assert "https://a.com/0" in fetched["content"]
+
+
+async def test_retrieve_unknown_key_errors_cleanly():
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        result = await client.call_tool("retrieve", {"key": "deadbeefdeadbeef"})
+    assert "error" in json.loads(_text(result))
 
 
 @respx.mock
