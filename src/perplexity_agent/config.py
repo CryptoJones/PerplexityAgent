@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     max_response_bytes: int = Field(default=5 * 1024 * 1024, gt=0)
     max_retries: int = Field(default=3, ge=0, le=8)
 
+    # --- Output efficiency (token budgeting; context-flood guard) ---
+    # Per-result char budget handed to the model. A result over this is bounded
+    # and the full value offloaded behind a retrieve_key (see efficiency.py).
+    max_tool_output_chars: int = Field(default=100_000, gt=0)
+
     # --- Rate limiting (token bucket; NSA: DoS / fatigue) ---
     rate_per_minute: float = Field(default=60.0, gt=0)
     rate_burst: int = Field(default=10, gt=0)

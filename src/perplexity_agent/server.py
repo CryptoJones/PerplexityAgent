@@ -1,9 +1,11 @@
 """FastMCP server exposing the Perplexity tools.
 
-Three tools are registered — ``perplexity_search``, ``sonar_ask`` and
-``deep_research``. Every invocation runs through the same control path: validate
-input against a strict schema, apply the token-bucket rate limit, call the API,
-then emit a redacted audit record (NSA: validate parameters, DoS guard, logging).
+Tools: ``perplexity_search``, ``sonar_ask``, ``deep_research``, and ``retrieve``.
+Every invocation runs through the same control path: validate input against a
+strict schema, apply the token-bucket rate limit, call the API, **bound the
+result to the output budget** (offloading an oversized value behind a
+``retrieve_key`` the ``retrieve`` tool can fetch), then emit a redacted audit
+record (NSA: validate parameters, DoS guard, logging; context-flood guard).
 """
 
 from __future__ import annotations
@@ -12,14 +14,15 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 from mcp.server.fastmcp import Context, FastMCP
 
 from .client import PerplexityClient
 from .config import Settings, load_settings
+from .efficiency import OffloadStore, bound_result
 from .research import deep_research as _deep_research
-from .schemas import DeepResearchInput, SearchInput, SonarAskInput, SonarModel
+from .schemas import DeepResearchInput, RetrieveInput, SearchInput, SonarAskInput, SonarModel
 from .security import AuditLogger, RateLimitError, TokenBucket, content_hash
 
 
@@ -28,6 +31,9 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
     settings = settings or load_settings()
     audit = AuditLogger(settings.audit_log_path)
     bucket = TokenBucket(settings.rate_per_minute, settings.rate_burst)
+    # One offload store for the server's lifetime: when a result is over budget,
+    # it's stashed here and the agent gets a retrieve_key to fetch it on demand.
+    store = OffloadStore()
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -80,6 +86,20 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             fields["usage"] = usage
         return fields
 
+    def _bound(result: dict[str, Any]) -> dict[str, Any]:
+        """Bound a result to the char budget, offloading the full value if over.
+
+        For a dict input ``bound_result`` returns either the dict unchanged or a
+        ``{truncated, content, retrieve_key}`` envelope — always a dict.
+        """
+        return cast(
+            dict[str, Any],
+            bound_result(result, max_chars=settings.max_tool_output_chars, store=store),
+        )
+
+    def _truncated(bounded: Any) -> bool:
+        return isinstance(bounded, dict) and bool(bounded.get("truncated"))
+
     @mcp.tool()
     async def perplexity_search(
         ctx: Context,
@@ -98,10 +118,14 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
         result = await _client(ctx).search(
             args.query, args.max_results, args.max_tokens_per_page
         )
+        bounded = _bound(result)
         audit.record(
-            "tool_result", tool="perplexity_search", **_result_fields(call_id, started, result)
+            "tool_result",
+            tool="perplexity_search",
+            truncated=_truncated(bounded),
+            **_result_fields(call_id, started, result),
         )
-        return result
+        return bounded
 
     @mcp.tool()
     async def sonar_ask(
@@ -121,8 +145,14 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             messages.append({"role": "system", "content": args.system_prompt})
         messages.append({"role": "user", "content": args.question})
         result = await _client(ctx).chat(messages, model=args.model.value)
-        audit.record("tool_result", tool="sonar_ask", **_result_fields(call_id, started, result))
-        return result
+        bounded = _bound(result)
+        audit.record(
+            "tool_result",
+            tool="sonar_ask",
+            truncated=_truncated(bounded),
+            **_result_fields(call_id, started, result),
+        )
+        return bounded
 
     @mcp.tool()
     async def deep_research(
@@ -154,12 +184,33 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             max_results_per_subquestion=args.max_results_per_subquestion,
             use_model_decomposition=args.use_model_decomposition,
         )
+        bounded = _bound(result)
         audit.record(
             "tool_result",
             tool="deep_research",
             validation_passed=result["validation_report"]["passed"],
+            truncated=_truncated(bounded),
             **_result_fields(call_id, started, result),
         )
+        return bounded
+
+    @mcp.tool()
+    async def retrieve(key: str) -> dict[str, Any]:
+        """Fetch the full value previously offloaded behind a ``retrieve_key``.
+
+        When a tool result is over the output budget it's bounded and the full
+        value is stashed; pass the ``retrieve_key`` here to get the original back.
+        """
+        args = RetrieveInput(key=key)
+        call_id = _guard("retrieve", {"key": args.key})
+        started = time.monotonic()
+        payload = store.retrieve(args.key)
+        result: dict[str, Any] = (
+            {"error": f"no offloaded value for key {args.key!r} (expired or unknown)"}
+            if payload is None
+            else {"key": args.key, "content": payload}
+        )
+        audit.record("tool_result", tool="retrieve", **_result_fields(call_id, started, result))
         return result
 
     return mcp, settings

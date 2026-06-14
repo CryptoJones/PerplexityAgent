@@ -10,6 +10,7 @@ returned to callers.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -95,28 +96,35 @@ class PerplexityClient:
         await self.aclose()
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST with retry/jitter and a hard response-size cap."""
+        """POST with retry/jitter and a streamed, hard response-size cap.
+
+        The body is read incrementally and aborted the moment it crosses
+        ``max_response_bytes`` — a hostile or misconfigured upstream can't buffer
+        a huge body into memory first (NSA: constrain & sandbox, DoS guard).
+        """
         last_exc: Exception | None = None
         for attempt in range(self._settings.max_retries + 1):
             retry_after: float | None = None
             try:
-                resp = await self._client.post(path, json=payload)
+                async with self._client.stream("POST", path, json=payload) as resp:
+                    if (
+                        resp.status_code in _RETRYABLE_STATUS
+                        and attempt < self._settings.max_retries
+                    ):
+                        last_exc = PerplexityError(f"Transient HTTP {resp.status_code}")
+                        retry_after = _retry_after_seconds(resp)
+                    else:
+                        body = await self._read_capped(resp)
+                        if resp.status_code >= 400:
+                            # Surface a concise error without leaking request headers.
+                            text = body.decode("utf-8", "replace")[:500]
+                            raise PerplexityError(
+                                f"Perplexity API error {resp.status_code}: {text}"
+                            )
+                        data: dict[str, Any] = json.loads(body)
+                        return data
             except httpx.RequestError as exc:  # network/timeout — transient
                 last_exc = exc
-            else:
-                if resp.status_code in _RETRYABLE_STATUS and attempt < self._settings.max_retries:
-                    last_exc = PerplexityError(f"Transient HTTP {resp.status_code}")
-                    retry_after = _retry_after_seconds(resp)
-                else:
-                    if resp.status_code >= 400:
-                        # Surface a concise error without leaking request headers.
-                        raise PerplexityError(
-                            f"Perplexity API error {resp.status_code}: "
-                            f"{resp.text[:500]}"
-                        )
-                    self._enforce_size(resp)
-                    data: dict[str, Any] = resp.json()
-                    return data
 
             # Honor a server-supplied Retry-After; otherwise back off with full jitter.
             if retry_after is not None:
@@ -129,13 +137,19 @@ class PerplexityClient:
             f"Request to {path} failed after {self._settings.max_retries} retries: {last_exc}"
         )
 
-    def _enforce_size(self, resp: httpx.Response) -> None:
-        body = resp.content
-        if len(body) > self._settings.max_response_bytes:
-            raise PerplexityError(
-                f"Response too large ({len(body)} bytes > "
-                f"{self._settings.max_response_bytes} cap); rejected as a DoS guard."
-            )
+    async def _read_capped(self, resp: httpx.Response) -> bytes:
+        """Stream the body, enforcing ``max_response_bytes`` as bytes arrive."""
+        cap = self._settings.max_response_bytes
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in resp.aiter_bytes():
+            total += len(chunk)
+            if total > cap:
+                raise PerplexityError(
+                    f"Response too large (>{cap} bytes cap); rejected as a DoS guard."
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     async def search(
         self, query: str, max_results: int = 5, max_tokens_per_page: int = 1024
