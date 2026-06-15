@@ -14,11 +14,16 @@ import json
 import logging
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger("perplexity_agent.audit")
+
+# An audit line larger than this (bytes) is replaced with a small {_truncated,
+# original_size, sha256} stub so a hostile or buggy field can't flood the log.
+_MAX_AUDIT_BYTES = 100_000
 
 # Substrings that commonly indicate a secret; values are redacted from audit logs.
 _SECRET_KEY_HINTS = ("key", "token", "secret", "authorization", "password", "bearer")
@@ -90,28 +95,37 @@ class RateLimitError(RuntimeError):
 
 @dataclass
 class TokenBucket:
-    """Simple monotonic token-bucket limiter (NSA: DoS / fatigue resistance)."""
+    """Simple monotonic token-bucket limiter (NSA: DoS / fatigue resistance).
+
+    ``acquire`` is lock-guarded so the limiter stays correct even if a future
+    transport drives it from multiple OS threads. The single-event-loop default
+    is already race-free (``acquire`` never awaits); the lock makes that hold off
+    the loop too.
+    """
 
     rate_per_minute: float
     burst: int
     _tokens: float = field(init=False)
     _updated: float = field(init=False)
+    _lock: Any = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self._tokens = float(self.burst)
         self._updated = time.monotonic()
+        self._lock = threading.Lock()
 
     def acquire(self, cost: float = 1.0) -> None:
-        now = time.monotonic()
-        elapsed = now - self._updated
-        self._updated = now
-        self._tokens = min(self.burst, self._tokens + elapsed * (self.rate_per_minute / 60.0))
-        if self._tokens < cost:
-            raise RateLimitError(
-                "Rate limit exceeded; slow down requests "
-                f"(limit ~{self.rate_per_minute:.0f}/min, burst {self.burst})."
-            )
-        self._tokens -= cost
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._updated
+            self._updated = now
+            self._tokens = min(self.burst, self._tokens + elapsed * (self.rate_per_minute / 60.0))
+            if self._tokens < cost:
+                raise RateLimitError(
+                    "Rate limit exceeded; slow down requests "
+                    f"(limit ~{self.rate_per_minute:.0f}/min, burst {self.burst})."
+                )
+            self._tokens -= cost
 
 
 class AuditLogger:
@@ -131,9 +145,23 @@ class AuditLogger:
             self._logger.addHandler(fh)
 
     def record(self, event: str, **fields: object) -> None:
-        """Emit one audit event. All fields pass through secret redaction."""
+        """Emit one audit event. Fields pass through secret redaction; an
+        oversized line is replaced with a small ``{_truncated, original_size,
+        sha256}`` stub so a hostile or buggy field can't flood the log."""
         payload = {"event": event, **{k: redact(v) for k, v in fields.items()}}
-        self._logger.info(json.dumps(payload, default=str, sort_keys=True))
+        line = json.dumps(payload, default=str, sort_keys=True)
+        raw = line.encode("utf-8", "replace")
+        if len(raw) > _MAX_AUDIT_BYTES:
+            line = json.dumps(
+                {
+                    "event": event,
+                    "_truncated": True,
+                    "original_size": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                },
+                sort_keys=True,
+            )
+        self._logger.info(line)
 
 
 class RequestGuard:
