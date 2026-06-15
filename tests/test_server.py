@@ -36,7 +36,17 @@ async def test_list_tools_exposes_all():
     mcp, _ = build_server(_settings())
     async with connect(mcp._mcp_server) as client:
         tools = sorted(t.name for t in (await client.list_tools()).tools)
-    assert tools == ["deep_research", "perplexity_search", "retrieve", "sonar_ask"]
+    assert tools == [
+        "deep_research", "perplexity_search", "retrieve", "server_metrics", "sonar_ask"
+    ]
+
+
+async def test_server_metrics_tool_reports_counters():
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        out = json.loads(_text(await client.call_tool("server_metrics", {})))
+    assert "total_calls" in out
+    assert "latency_ms" in out
 
 
 @respx.mock

@@ -9,7 +9,10 @@ bearer token and binds to localhost by default.
 from __future__ import annotations
 
 import argparse
+import atexit
 import hmac
+import logging
+import signal
 import sys
 
 from mcp.server.fastmcp import FastMCP
@@ -71,6 +74,33 @@ def _run_tui(settings: Settings) -> None:
     run_tui(settings)
 
 
+def _install_graceful_shutdown() -> None:
+    """Flush audit-log handlers on normal exit and on SIGTERM before terminating.
+
+    The running transports drive their own signal handling; this just adds an
+    explicit audit flush so no buffered record is lost at shutdown.
+    """
+
+    def _flush() -> None:
+        for handler in logging.getLogger("perplexity_agent.audit").handlers:
+            try:
+                handler.flush()
+            except (ValueError, OSError):
+                pass  # stream already closed (e.g. at interpreter shutdown) — nothing to flush
+
+    atexit.register(_flush)
+
+    def _on_sigterm(signum: int, _frame: object) -> None:
+        _flush()
+        signal.signal(signum, signal.SIG_DFL)
+        signal.raise_signal(signum)  # re-raise with default disposition
+
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except ValueError:
+        pass  # not on the main thread (e.g. under a test runner) — nothing to install
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="perplexity-agent", description=__doc__)
     # Backward-compatible: `perplexity-agent` and `perplexity-agent --transport ...`
@@ -84,6 +114,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("tui", help="Launch the interactive Comet-style terminal UI.")
     args = parser.parse_args()
+    _install_graceful_shutdown()
 
     if args.command == "tui":
         # --transport only governs the MCP server; pairing it with `tui` is a
