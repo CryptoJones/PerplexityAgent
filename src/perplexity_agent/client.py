@@ -70,6 +70,44 @@ def dedupe_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def message_content(chat_response: dict[str, Any]) -> str:
+    """Extract the assistant message text from an OpenAI-compatible chat completion.
+
+    The single home for the Sonar response-shape contract: both the MCP research
+    pipeline and the TUI assistant call this instead of duplicating the
+    ``choices[0].message.content`` walk (and its error message).
+    """
+    try:
+        content = chat_response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError(f"Unexpected Sonar response shape: {exc}") from exc
+    return str(content or "")
+
+
+def citation_urls(chat_response: dict[str, Any]) -> list[str]:
+    """Best-effort citation URLs from a Sonar response, deduped by canonical URL.
+
+    Uses the same :func:`canonical_url` as the search path, so a trailing-slash
+    or host-case variant of one link can't appear twice in the Sources list.
+    """
+    raw: list[str] = []
+    for key in ("citations", "search_results"):
+        items = chat_response.get(key) or []
+        for item in items:
+            if isinstance(item, str):
+                raw.append(item)
+            elif isinstance(item, dict) and item.get("url"):
+                raw.append(str(item["url"]))
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in raw:
+        canon = canonical_url(url)
+        if canon and canon not in seen:
+            seen.add(canon)
+            out.append(url)
+    return out
+
+
 class PerplexityClient:
     """Async client for the Perplexity Search + Sonar APIs."""
 

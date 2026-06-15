@@ -23,7 +23,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from .client import PerplexityClient, dedupe_results
+from .client import PerplexityClient, citation_urls, dedupe_results, message_content
 from .research import decompose
 
 # Keep page/tab context bounded when we fold it into a prompt (~12 KB per blob).
@@ -82,34 +82,6 @@ class Reply:
     citations: list[str] = field(default_factory=list)
 
 
-def _content(chat_response: dict[str, Any]) -> str:
-    try:
-        content = chat_response["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise ValueError(f"Unexpected Sonar response shape: {exc}") from exc
-    return str(content or "")
-
-
-def citation_urls(chat_response: dict[str, Any]) -> list[str]:
-    """Best-effort citation URLs from a Sonar response (mirrors research.py)."""
-    urls: list[str] = []
-    for key in ("citations", "search_results"):
-        items = chat_response.get(key) or []
-        for item in items:
-            if isinstance(item, str):
-                urls.append(item)
-            elif isinstance(item, dict) and item.get("url"):
-                urls.append(str(item["url"]))
-    # Preserve order, drop dupes.
-    seen: set[str] = set()
-    out: list[str] = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
-
-
 class Assistant:
     """Orchestrates Perplexity calls for the interactive surfaces."""
 
@@ -140,7 +112,7 @@ class Assistant:
             messages.extend(history)
         messages.append({"role": "user", "content": question})
         resp = await self._client.chat(messages, model=self._model)
-        return Reply(text=_content(resp), citations=citation_urls(resp))
+        return Reply(text=message_content(resp), citations=citation_urls(resp))
 
     async def summarize_page(self, page_text: str, title: str = "") -> Reply:
         """One-click page summary (Comet's summarize button)."""
@@ -152,7 +124,7 @@ class Assistant:
             ],
             model=self._model,
         )
-        return Reply(text=_content(resp), citations=citation_urls(resp))
+        return Reply(text=message_content(resp), citations=citation_urls(resp))
 
     async def ask_page(self, page_text: str, question: str, title: str = "") -> Reply:
         """Answer a question about the current page (Comet's 'ask about this page')."""
@@ -167,7 +139,7 @@ class Assistant:
             ],
             model=self._model,
         )
-        return Reply(text=_content(resp), citations=citation_urls(resp))
+        return Reply(text=message_content(resp), citations=citation_urls(resp))
 
     async def translate_page(self, page_text: str, target_lang: str) -> Reply:
         """Translate the current page into ``target_lang``."""
@@ -184,7 +156,7 @@ class Assistant:
             ],
             model=self._model,
         )
-        return Reply(text=_content(resp), citations=[])
+        return Reply(text=message_content(resp), citations=[])
 
     async def synthesize_tabs(self, tabs: list[Tab], question: str | None = None) -> Reply:
         """Summarize or compare across all open tabs (Comet's 'chat with your tabs')."""
@@ -201,7 +173,7 @@ class Assistant:
             ],
             model=self._model,
         )
-        return Reply(text=_content(resp), citations=citation_urls(resp))
+        return Reply(text=message_content(resp), citations=citation_urls(resp))
 
     async def group_tabs(self, tabs: list[Tab]) -> list[dict[str, Any]]:
         """Cluster open tabs into named groups (Comet's AI tab grouping).
@@ -232,7 +204,7 @@ class Assistant:
             },
         )
         try:
-            parsed = json.loads(_content(resp))
+            parsed = json.loads(message_content(resp))
             raw_groups = parsed.get("groups", [])
         except (ValueError, AttributeError, TypeError):
             # ValueError covers json.JSONDecodeError AND the "Unexpected Sonar
