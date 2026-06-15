@@ -12,6 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import threading
+import time
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -40,6 +43,67 @@ def _retry_after_seconds(resp: httpx.Response) -> float | None:
 
 class PerplexityError(RuntimeError):
     """Raised for non-retryable or exhausted-retry API failures."""
+
+
+class CircuitOpenError(PerplexityError):
+    """Raised when the circuit breaker is open and failing fast."""
+
+
+@dataclass
+class CircuitBreaker:
+    """Trip after consecutive upstream outages; fail fast until it cools down.
+
+    closed → (failures ≥ threshold) → open → (after ``recovery_time`` s) → a
+    *single* half-open probe → closed on success / re-open on failure. While a
+    probe is in flight, concurrent callers fast-fail instead of stampeding a
+    recovering API. Only genuine outages (transport errors / retry-exhausted 5xx)
+    count as failures — a plain 4xx is the upstream answering. Every transition
+    is lock-guarded so it stays correct off the single event loop too; the lock
+    is held only for the brief transition, never across the awaited request.
+    """
+
+    failure_threshold: int = 5
+    recovery_time: float = 30.0
+    _failures: int = field(default=0, init=False)
+    _opened_at: float | None = field(default=None, init=False)
+    _probing: bool = field(default=False, init=False)
+    _lock: Any = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def acquire(self) -> bool:
+        """Admit a request or raise ``CircuitOpenError``; returns True for the probe.
+
+        A ``True`` MUST be paired with ``release(True)`` in a ``finally`` so the
+        slot is freed even on an unexpected error — otherwise the breaker wedges.
+        """
+        with self._lock:
+            if self._opened_at is None:
+                return False
+            if time.monotonic() - self._opened_at < self.recovery_time:
+                raise CircuitOpenError("circuit open: Perplexity API failing, retry after cooldown")
+            if self._probing:
+                raise CircuitOpenError("circuit half-open: a probe is already in flight")
+            self._probing = True
+            return True
+
+    def on_success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._opened_at = None
+
+    def on_failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self.failure_threshold:
+                self._opened_at = time.monotonic()
+
+    def release(self, is_probe: bool) -> None:
+        """Free the half-open probe slot — a no-op unless this call held it."""
+        if is_probe:
+            with self._lock:
+                self._probing = False
 
 
 def canonical_url(url: str) -> str:
@@ -140,6 +204,7 @@ class PerplexityClient:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self._settings = settings
         self._owns_client = client is None
+        self._breaker = CircuitBreaker()
         self._client = client or httpx.AsyncClient(
             base_url=settings.base_url,
             timeout=settings.timeout,
@@ -147,6 +212,8 @@ class PerplexityClient:
                 "Authorization": f"Bearer {settings.api_key.get_secret_value()}",
                 "Content-Type": "application/json",
             },
+            # Explicit, bounded pool so a burst can't exhaust FDs / memory.
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
 
     async def aclose(self) -> None:
@@ -166,40 +233,50 @@ class PerplexityClient:
         ``max_response_bytes`` — a hostile or misconfigured upstream can't buffer
         a huge body into memory first (NSA: constrain & sandbox, DoS guard).
         """
-        last_exc: Exception | None = None
-        for attempt in range(self._settings.max_retries + 1):
-            retry_after: float | None = None
-            try:
-                async with self._client.stream("POST", path, json=payload) as resp:
-                    if (
-                        resp.status_code in _RETRYABLE_STATUS
-                        and attempt < self._settings.max_retries
-                    ):
-                        last_exc = PerplexityError(f"Transient HTTP {resp.status_code}")
-                        retry_after = _retry_after_seconds(resp)
-                    else:
-                        body = await self._read_capped(resp)
-                        if resp.status_code >= 400:
-                            # Surface a concise error without leaking request headers.
-                            text = body.decode("utf-8", "replace")[:500]
-                            raise PerplexityError(
-                                f"Perplexity API error {resp.status_code}: {text}"
-                            )
-                        data: dict[str, Any] = json.loads(body)
-                        return data
-            except httpx.RequestError as exc:  # network/timeout — transient
-                last_exc = exc
+        is_probe = self._breaker.acquire()  # fail fast if the API is known-down
+        try:
+            last_exc: Exception | None = None
+            for attempt in range(self._settings.max_retries + 1):
+                retry_after: float | None = None
+                try:
+                    async with self._client.stream("POST", path, json=payload) as resp:
+                        if (
+                            resp.status_code in _RETRYABLE_STATUS
+                            and attempt < self._settings.max_retries
+                        ):
+                            last_exc = PerplexityError(f"Transient HTTP {resp.status_code}")
+                            retry_after = _retry_after_seconds(resp)
+                        else:
+                            body = await self._read_capped(resp)
+                            if resp.status_code >= 400:
+                                # A retryable status with retries spent is an upstream
+                                # outage; a plain 4xx is the upstream answering, so it
+                                # must not trip the breaker.
+                                if resp.status_code in _RETRYABLE_STATUS:
+                                    self._breaker.on_failure()
+                                text = body.decode("utf-8", "replace")[:500]
+                                raise PerplexityError(
+                                    f"Perplexity API error {resp.status_code}: {text}"
+                                )
+                            data: dict[str, Any] = json.loads(body)
+                            self._breaker.on_success()
+                            return data
+                except httpx.RequestError as exc:  # network/timeout — transient
+                    last_exc = exc
 
-            # Honor a server-supplied Retry-After; otherwise back off with full jitter.
-            if retry_after is not None:
-                sleep_s = retry_after
-            else:
-                sleep_s = min(2 ** attempt, 8) * (0.5 + random.random() / 2)  # noqa: S311 - not crypto
-            await asyncio.sleep(sleep_s)
+                # Honor a server-supplied Retry-After; otherwise back off with full jitter.
+                if retry_after is not None:
+                    sleep_s = retry_after
+                else:
+                    sleep_s = min(2 ** attempt, 8) * (0.5 + random.random() / 2)  # noqa: S311 - not crypto
+                await asyncio.sleep(sleep_s)
 
-        raise PerplexityError(
-            f"Request to {path} failed after {self._settings.max_retries} retries: {last_exc}"
-        )
+            self._breaker.on_failure()  # transport errors exhausted retries → outage
+            raise PerplexityError(
+                f"Request to {path} failed after {self._settings.max_retries} retries: {last_exc}"
+            )
+        finally:
+            self._breaker.release(is_probe)
 
     async def _read_capped(self, resp: httpx.Response) -> bytes:
         """Stream the body, enforcing the size cap (shared with the page fetcher)."""
