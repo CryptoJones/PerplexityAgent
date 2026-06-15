@@ -21,6 +21,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from .client import PerplexityClient
 from .config import Settings, load_settings
 from .efficiency import OffloadStore, bound_result
+from .metrics import MetricsCollector
 from .research import deep_research as _deep_research
 from .schemas import DeepResearchInput, RetrieveInput, SearchInput, SonarAskInput, SonarModel
 from .security import AuditLogger, RateLimitError, TokenBucket, content_hash
@@ -34,6 +35,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
     # One offload store for the server's lifetime: when a result is over budget,
     # it's stashed here and the agent gets a retrieve_key to fetch it on demand.
     store = OffloadStore()
+    metrics = MetricsCollector()
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -69,16 +71,22 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
         try:
             bucket.acquire()
         except RateLimitError:
+            metrics.record_rate_limited(tool)
             audit.record("rate_limited", tool=tool, call_id=call_id, params=params)
             raise
         audit.record("tool_call", tool=tool, call_id=call_id, params=params)
         return call_id
 
-    def _result_fields(call_id: str, started: float, result: dict[str, Any]) -> dict[str, Any]:
-        """Common ``tool_result`` audit fields: correlation, latency, token usage."""
+    def _result_fields(
+        tool: str, call_id: str, started: float, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Common ``tool_result`` audit fields (correlation, latency, token usage);
+        also records the call's latency in the metrics collector."""
+        duration_ms = round((time.monotonic() - started) * 1000, 1)
+        metrics.record_call(tool, duration_ms)
         fields: dict[str, Any] = {
             "call_id": call_id,
-            "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            "duration_ms": duration_ms,
             "result_hash": content_hash(result),
         }
         usage = result.get("usage")
@@ -123,7 +131,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             "tool_result",
             tool="perplexity_search",
             truncated=_truncated(bounded),
-            **_result_fields(call_id, started, result),
+            **_result_fields("perplexity_search", call_id, started, result),
         )
         return bounded
 
@@ -150,7 +158,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             "tool_result",
             tool="sonar_ask",
             truncated=_truncated(bounded),
-            **_result_fields(call_id, started, result),
+            **_result_fields("sonar_ask", call_id, started, result),
         )
         return bounded
 
@@ -190,7 +198,7 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             tool="deep_research",
             validation_passed=result["validation_report"]["passed"],
             truncated=_truncated(bounded),
-            **_result_fields(call_id, started, result),
+            **_result_fields("deep_research", call_id, started, result),
         )
         return bounded
 
@@ -210,7 +218,22 @@ def build_server(settings: Settings | None = None) -> tuple[FastMCP, Settings]:
             if payload is None
             else {"key": args.key, "content": payload}
         )
-        audit.record("tool_result", tool="retrieve", **_result_fields(call_id, started, result))
+        audit.record(
+            "tool_result", tool="retrieve", **_result_fields("retrieve", call_id, started, result)
+        )
+        return result
+
+    @mcp.tool()
+    async def server_metrics() -> dict[str, Any]:
+        """Report request/latency/rate-limit counters for this server process."""
+        call_id = _guard("server_metrics", {})
+        started = time.monotonic()
+        result = metrics.snapshot()
+        audit.record(
+            "tool_result",
+            tool="server_metrics",
+            **_result_fields("server_metrics", call_id, started, result),
+        )
         return result
 
     return mcp, settings
