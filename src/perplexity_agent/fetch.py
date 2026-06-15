@@ -21,6 +21,7 @@ cap) and adds the controls a fetch of *attacker-influenceable* URLs needs:
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import socket
 from dataclasses import dataclass, field
@@ -93,17 +94,21 @@ def _is_public_ip(raw: str) -> bool:
     return ip.is_global
 
 
-def _assert_host_allowed(host: str, *, allow_private: bool) -> str:
+async def _assert_host_allowed(host: str, *, allow_private: bool) -> str:
     """Resolve ``host``, raise unless every resolved IP is allowed, return one.
 
     The returned address is the one the connection will be pinned to, so the IP
     that was validated is exactly the IP that gets dialed (no re-resolution
-    window for DNS rebinding).
+    window for DNS rebinding). Resolution is offloaded to a worker thread so a
+    slow or unresponsive nameserver can't block the asyncio event loop the TUI
+    runs on — a synchronous ``getaddrinfo`` here froze the whole UI.
     """
     if not host:
         raise FetchError("URL has no host.")
     try:
-        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        infos = await asyncio.to_thread(
+            socket.getaddrinfo, host, None, proto=socket.IPPROTO_TCP
+        )
     except socket.gaierror as exc:
         raise FetchError(f"Could not resolve host {host!r}: {exc}") from exc
 
@@ -121,14 +126,14 @@ def _assert_host_allowed(host: str, *, allow_private: bool) -> str:
     return addrs[0]
 
 
-def _validate_url(url: str, *, allow_private: bool) -> str:
+async def _validate_url(url: str, *, allow_private: bool) -> str:
     """Validate scheme + host of ``url``; return the validated IP to pin to."""
     parts = urlsplit(url)
     if parts.scheme.lower() not in _ALLOWED_SCHEMES:
         raise FetchError(
             f"Refusing to fetch scheme {parts.scheme!r}; only http/https are allowed."
         )
-    return _assert_host_allowed(parts.hostname or "", allow_private=allow_private)
+    return await _assert_host_allowed(parts.hostname or "", allow_private=allow_private)
 
 
 def _pin_to_ip(url: str, ip: str) -> tuple[str, dict[str, str], dict[str, Any]]:
@@ -218,7 +223,7 @@ class PageFetcher:
 
         for _ in range(_MAX_REDIRECTS + 1):
             # Validate every hop, then pin the connection to the validated IP.
-            ip = _validate_url(current, allow_private=allow_private)
+            ip = await _validate_url(current, allow_private=allow_private)
             pinned, headers, extensions = _pin_to_ip(current, ip)
             async with self._client.stream(
                 "GET", pinned, headers=headers, extensions=extensions
