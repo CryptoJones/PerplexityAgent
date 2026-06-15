@@ -1,8 +1,12 @@
+import threading
+
 import httpx
 import pytest
 import respx
 
 from perplexity_agent.client import (
+    CircuitBreaker,
+    CircuitOpenError,
     PerplexityClient,
     PerplexityError,
     canonical_url,
@@ -164,4 +168,101 @@ async def test_response_content_length_rejected_before_read(settings):
     )
     async with PerplexityClient(settings) as client:
         with pytest.raises(PerplexityError, match="Content-Length"):
+            await client.search("q")
+
+
+def test_circuit_breaker_opens_then_half_opens_and_recovers():
+    cb = CircuitBreaker(failure_threshold=2, recovery_time=30.0)
+    assert cb.acquire() is False  # closed
+    cb.on_failure()
+    assert cb.acquire() is False  # 1 < threshold
+    cb.on_failure()  # opens
+    with pytest.raises(CircuitOpenError):
+        cb.acquire()
+    cb._opened_at -= 31.0  # cooldown elapsed
+    assert cb.acquire() is True  # the single half-open probe
+    with pytest.raises(CircuitOpenError):  # a concurrent caller is refused
+        cb.acquire()
+    cb.on_success()
+    cb.release(True)
+    assert cb.acquire() is False  # fully closed again
+
+
+def test_circuit_breaker_failed_probe_reopens_without_wedging():
+    cb = CircuitBreaker(failure_threshold=1, recovery_time=30.0)
+    cb.on_failure()
+    cb._opened_at -= 31.0
+    assert cb.acquire() is True
+    cb.on_failure()  # probe failed → re-open
+    cb.release(True)  # slot freed even though it re-opened
+    with pytest.raises(CircuitOpenError):
+        cb.acquire()
+    cb._opened_at -= 31.0
+    assert cb.acquire() is True  # a fresh probe is admitted — slot not wedged
+
+
+def test_circuit_breaker_release_only_clears_own_probe():
+    cb = CircuitBreaker(failure_threshold=1, recovery_time=30.0)
+    cb.on_failure()
+    cb._opened_at -= 31.0
+    assert cb.acquire() is True
+    cb.release(False)  # a non-probe caller releasing must be a no-op
+    with pytest.raises(CircuitOpenError):
+        cb.acquire()
+
+
+def test_circuit_breaker_lock_serializes_transitions(monkeypatch):
+    # Deterministic proof the lock gives mutual exclusion: while acquire() holds
+    # it, a concurrent on_success() cannot proceed (fails if the lock is removed).
+    import perplexity_agent.client as client_mod
+
+    cb = CircuitBreaker(failure_threshold=1, recovery_time=30.0)
+    cb.on_failure()
+    cb._opened_at -= 31.0  # half-open
+
+    real_monotonic = client_mod.time.monotonic
+    entered = threading.Event()
+    hold = threading.Event()
+
+    def gated() -> float:
+        if threading.current_thread().name == "acquirer" and not entered.is_set():
+            entered.set()
+            hold.wait(timeout=2)
+        return real_monotonic()
+
+    monkeypatch.setattr(client_mod.time, "monotonic", gated)
+
+    probe: dict[str, bool] = {}
+    success_done = threading.Event()
+
+    def do_acquire() -> None:
+        probe["admitted"] = cb.acquire()
+
+    def do_success() -> None:
+        cb.on_success()
+        success_done.set()
+
+    ta = threading.Thread(target=do_acquire, name="acquirer")
+    ta.start()
+    assert entered.wait(1)  # acquire() now parked while holding the lock
+    ts = threading.Thread(target=do_success)
+    ts.start()
+    assert not success_done.wait(0.2)  # on_success() blocked on the same lock
+    hold.set()
+    ta.join()
+    ts.join()
+    assert success_done.is_set()
+    assert probe["admitted"] is True
+
+
+@respx.mock
+async def test_breaker_opens_after_repeated_5xx(settings):
+    settings.max_retries = 0  # 1 attempt, no backoff sleeps
+    respx.post("https://api.perplexity.ai/search").mock(return_value=httpx.Response(503))
+    async with PerplexityClient(settings) as client:
+        client._breaker.failure_threshold = 2
+        for _ in range(2):
+            with pytest.raises(PerplexityError):
+                await client.search("q")
+        with pytest.raises(CircuitOpenError):  # breaker now open → fails fast
             await client.search("q")
