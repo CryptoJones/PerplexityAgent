@@ -125,6 +125,19 @@ async def test_step_gives_up_after_consecutive_failures():
     assert mgr.list() == []
 
 
+async def test_step_propagates_cancellation():
+    # CancelledError is BaseException, so the broad `except Exception` in step()
+    # doesn't catch it — it still propagates without the (removed) explicit re-raise.
+    class _Cancelling:
+        async def search(self, _query, max_results=5):
+            raise asyncio.CancelledError
+
+    mgr = TaskManager(_Cancelling(), _FakeFetcher(), lambda _m: None)
+    task = MonitorTask(id=1, kind="search", target="x", interval_s=999)
+    with pytest.raises(asyncio.CancelledError):
+        await mgr.step(task)
+
+
 async def test_add_and_remove_tracks_tasks():
     assistant = _FakeAssistant([[{"url": "https://a.com"}]])
     mgr = TaskManager(assistant, _FakeFetcher(), lambda _m: None)

@@ -10,7 +10,7 @@ stable :func:`content_hash` so a notification only fires on a genuine diff.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -35,7 +35,6 @@ class MonitorTask:
     target: str
     interval_s: float
     last_signature: str | None = None
-    last_summary: str = ""
     runs: int = 0
     failures: int = 0
     _handle: asyncio.Task[None] | None = field(default=None, repr=False, compare=False)
@@ -93,11 +92,8 @@ class TaskManager:
             await asyncio.gather(*handles, return_exceptions=True)
 
     async def _loop(self, task: MonitorTask) -> None:
-        try:
-            while await self.step(task):
-                await asyncio.sleep(task.interval_s)
-        except asyncio.CancelledError:  # pragma: no cover - cancellation path
-            raise
+        while await self.step(task):
+            await asyncio.sleep(task.interval_s)
 
     async def step(self, task: MonitorTask) -> bool:
         """One guarded check (the loop body). Returns False when the monitor should stop.
@@ -108,8 +104,6 @@ class TaskManager:
         """
         try:
             await self.run_once(task)
-        except asyncio.CancelledError:  # pragma: no cover - cancellation path
-            raise
         except Exception as exc:  # noqa: BLE001 - any probe failure must not kill the loop
             task.failures += 1
             if task.failures >= _MAX_CONSECUTIVE_FAILURES:
@@ -138,7 +132,6 @@ class TaskManager:
         changed = task.last_signature is not None and signature != task.last_signature
         first = task.last_signature is None
         task.last_signature = signature
-        task.last_summary = summary
         if changed:
             self._notify(f"[task {task.id}] '{task.target}' changed: {summary}")
         elif first:
@@ -156,7 +149,3 @@ class TaskManager:
         page = await self._fetcher.fetch(task.target)
         summary = f"{page.title or page.final_url} ({page.fetched_bytes} bytes)"
         return summary, content_hash(page.text)
-
-
-# Allow an awaitable notifier too, without forcing callers to provide one.
-AsyncNotify = Callable[[str], Awaitable[None]]
