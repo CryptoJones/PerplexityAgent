@@ -264,3 +264,29 @@ async def test_injection_flags_surface(monkeypatch, settings):
         async with PageFetcher(settings) as fetcher:
             page = await fetcher.fetch("https://example.com/")
     assert page.injection_flags
+
+
+async def test_dns_resolution_is_offloaded_to_thread(monkeypatch, settings):
+    # getaddrinfo must run via asyncio.to_thread so a slow resolver can't block
+    # the event loop the TUI runs on.
+    import perplexity_agent.fetch as fetch_mod
+
+    monkeypatch.setattr(
+        fetch_mod.socket, "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+    used = {"offloaded": False}
+    real_to_thread = fetch_mod.asyncio.to_thread
+
+    async def spy(func, *a, **k):
+        used["offloaded"] = True
+        return await real_to_thread(func, *a, **k)
+
+    monkeypatch.setattr(fetch_mod.asyncio, "to_thread", spy)
+    with respx.mock:
+        respx.get("https://93.184.216.34/").mock(
+            return_value=httpx.Response(200, html="<title>t</title><p>x</p>")
+        )
+        async with PageFetcher(settings) as fetcher:
+            await fetcher.fetch("https://example.com/")
+    assert used["offloaded"]  # DNS went through to_thread, not a blocking call
