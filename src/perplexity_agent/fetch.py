@@ -30,6 +30,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from .client import read_capped
 from .config import Settings
 from .security import scan_for_injection
 
@@ -256,21 +257,5 @@ class PageFetcher:
         raise FetchError(f"Too many redirects (>{_MAX_REDIRECTS}) fetching {requested!r}.")
 
     async def _read_capped(self, resp: httpx.Response) -> bytes:
-        """Read the body in chunks, aborting as soon as the size cap is exceeded."""
-        cap = self._settings.max_response_bytes
-        declared = resp.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > cap:
-            raise FetchError(
-                f"Page too large (Content-Length {declared} bytes > {cap} cap); "
-                "rejected as a DoS guard."
-            )
-        chunks: list[bytes] = []
-        total = 0
-        async for chunk in resp.aiter_bytes():
-            total += len(chunk)
-            if total > cap:
-                raise FetchError(
-                    f"Page too large (>{cap} bytes); download aborted as a DoS guard."
-                )
-            chunks.append(chunk)
-        return b"".join(chunks)
+        """Stream the body, aborting once the shared size cap is exceeded."""
+        return await read_capped(resp, self._settings.max_response_bytes, FetchError)
