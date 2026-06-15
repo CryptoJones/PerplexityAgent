@@ -3,7 +3,7 @@ import json
 import httpx
 import respx
 
-from perplexity_agent.assistant import Assistant, Tab, citation_urls
+from perplexity_agent.assistant import _MAX_CONTEXT_CHARS, Assistant, Tab, _capped, citation_urls
 from perplexity_agent.client import PerplexityClient
 
 
@@ -18,6 +18,11 @@ def test_citation_urls_dedupes_and_extracts():
         search_results=[{"url": "https://b.com"}, {"no_url": 1}],
     )
     assert citation_urls(resp) == ["https://a.com", "https://b.com"]
+
+
+def test_capped_truncates_to_budget():
+    assert _capped("x" * (_MAX_CONTEXT_CHARS + 50)) == "x" * _MAX_CONTEXT_CHARS
+    assert _capped("short") == "short"
 
 
 def test_citation_urls_canonical_dedup():
