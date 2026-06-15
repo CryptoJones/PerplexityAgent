@@ -54,3 +54,14 @@ def test_research_report_schema_shape():
     schema = research_report_schema()
     assert schema["type"] == "object"
     assert set(schema["required"]) == {"answer", "key_findings", "open_questions", "claims"}
+
+
+def test_research_report_schema_supporting_urls_have_uri_format():
+    items = research_report_schema()["properties"]["claims"]["items"]
+    assert items["properties"]["supporting_urls"]["items"]["format"] == "uri"
+
+
+def test_research_report_schema_versioning():
+    assert research_report_schema("v1") == research_report_schema()
+    with pytest.raises(ValueError, match="Unknown research_report_schema version"):
+        research_report_schema("v999")

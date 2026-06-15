@@ -38,3 +38,19 @@ def test_validate_flags_unknown_url():
     assert vr["all_urls_known"] is False
     assert annotated["claims"][0]["unsupported_urls"] == ["https://evil.com/z"]
     assert annotated["claims"][0]["confidence"] == "low"
+
+
+def test_flagged_entries_carry_index_and_preview():
+    known = build_known_urls([{"url": "https://a.com/x"}])
+    report = {
+        "claims": [
+            {"claim": "supported", "supporting_urls": ["https://a.com/x"]},
+            {"claim": "C" * 200, "supporting_urls": []},
+        ]
+    }
+    _, vr = validate_report(report, known)
+    assert len(vr["flagged"]) == 1
+    f = vr["flagged"][0]
+    assert f["index"] == 1  # the second claim
+    assert f["reason"] == "no_supporting_url"
+    assert f["claim_preview"] == "C" * 100  # truncated to a 100-char preview

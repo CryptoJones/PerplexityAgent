@@ -56,13 +56,27 @@ class RetrieveInput(_StrictModel):
     key: str = Field(..., min_length=1, max_length=128)
 
 
-def research_report_schema() -> dict[str, Any]:
+def research_report_schema(version: str = "v1") -> dict[str, Any]:
     """JSON schema handed to Sonar via ``response_format`` for structured output.
 
     Mirrors the reference architecture: an answer plus key findings, open
     questions, and claims each carrying their supporting URLs so citations can be
     validated against retrieval metadata rather than trusted from free text.
+
+    ``version`` selects from a small registry, so the schema can evolve without
+    breaking a caller pinned to an older shape (``ValueError`` on an unknown one).
     """
+    try:
+        builder = _SCHEMA_VERSIONS[version]
+    except KeyError:
+        raise ValueError(
+            f"Unknown research_report_schema version {version!r}; "
+            f"known: {sorted(_SCHEMA_VERSIONS)}"
+        ) from None
+    return builder()
+
+
+def _research_report_schema_v1() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
@@ -77,7 +91,9 @@ def research_report_schema() -> dict[str, Any]:
                         "claim": {"type": "string"},
                         "supporting_urls": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            # format:uri so an obviously non-URL value is rejected
+                            # at the structured-output boundary.
+                            "items": {"type": "string", "format": "uri"},
                         },
                         "confidence": {
                             "type": "string",
@@ -90,3 +106,8 @@ def research_report_schema() -> dict[str, Any]:
         },
         "required": ["answer", "key_findings", "open_questions", "claims"],
     }
+
+
+# Registry of report-schema versions. Add a new builder under a new key rather
+# than mutating v1 so pinned callers keep their shape.
+_SCHEMA_VERSIONS = {"v1": _research_report_schema_v1}
