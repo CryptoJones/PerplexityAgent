@@ -1,4 +1,7 @@
+import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -89,3 +92,37 @@ def test_token_bucket_refills_over_time(monkeypatch):
         b.acquire()
     fake["t"] += 1.1  # ~1 token refilled
     b.acquire()
+
+
+def test_token_bucket_thread_safe_never_over_issues():
+    # Negligible refill over the test window, so exactly `burst` acquires succeed.
+    bucket = TokenBucket(rate_per_minute=1e-6, burst=50)
+    successes = 0
+    counter_lock = threading.Lock()
+
+    def grab(_: int) -> None:
+        nonlocal successes
+        try:
+            bucket.acquire()
+        except RateLimitError:
+            return
+        with counter_lock:
+            successes += 1
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(grab, range(500)))
+
+    assert successes == 50  # the lock keeps the bucket from over-issuing tokens
+
+
+def test_audit_record_truncates_oversized_payload(tmp_path):
+    log = tmp_path / "audit.log"
+    audit = AuditLogger(str(log))
+    audit.record("tool_result", blob="x" * 200_000)
+    text = log.read_text()
+    row = json.loads(text.strip().splitlines()[-1])
+    assert row["event"] == "tool_result"
+    assert row["_truncated"] is True
+    assert row["original_size"] > 100_000
+    assert len(row["sha256"]) == 64
+    assert "x" * 1000 not in text  # the bulky field itself is gone
