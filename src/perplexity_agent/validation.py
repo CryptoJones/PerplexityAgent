@@ -15,6 +15,19 @@ from typing import Any
 from .client import canonical_url
 
 
+def _flag(index: int, claim: dict[str, Any], reason: str) -> dict[str, Any]:
+    """A flagged-claim record: its array index, a short preview, and the reason.
+
+    The index + truncated preview make a flagged claim findable in the report
+    without dumping a full (possibly long) claim body into the validation output.
+    """
+    return {
+        "index": index,
+        "claim_preview": str(claim.get("claim") or "")[:100],
+        "reason": reason,
+    }
+
+
 def build_known_urls(sources: list[dict[str, Any]], extra: list[str] | None = None) -> set[str]:
     """Set of canonical URLs that actually appeared in retrieval/citation metadata."""
     known = {canonical_url(s.get("url") or "") for s in sources}
@@ -39,7 +52,7 @@ def validate_report(
     claims_with_unknown_urls = 0
     flagged: list[dict[str, Any]] = []
 
-    for claim in claims:
+    for idx, claim in enumerate(claims):
         urls = claim.get("supporting_urls") or []
         canon = [canonical_url(u) for u in urls if u]
         unknown = [u for u, c in zip(urls, canon, strict=False) if c and c not in known_urls]
@@ -47,14 +60,14 @@ def validate_report(
         if not canon:
             claims_without_support += 1
             claim["confidence"] = "uncertain"
-            flagged.append({"claim": claim.get("claim"), "reason": "no_supporting_url"})
+            flagged.append(_flag(idx, claim, "no_supporting_url"))
         elif unknown:
             claims_with_unknown_urls += 1
             claim["unsupported_urls"] = unknown
             # Don't trust links the retrieval stage never produced.
             if claim.get("confidence") not in ("low", "uncertain"):
                 claim["confidence"] = "low"
-            flagged.append({"claim": claim.get("claim"), "reason": "url_not_in_sources"})
+            flagged.append(_flag(idx, claim, "url_not_in_sources"))
 
     validation_report = {
         "total_claims": total,
