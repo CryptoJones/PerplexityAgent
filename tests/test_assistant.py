@@ -20,6 +20,13 @@ def test_citation_urls_dedupes_and_extracts():
     assert citation_urls(resp) == ["https://a.com", "https://b.com"]
 
 
+def test_citation_urls_canonical_dedup():
+    # Trailing-slash / host-case variants of one link collapse (canonical dedup),
+    # matching the search path instead of the old raw-string comparison.
+    resp = _chat("x", citations=["https://Example.com/p/", "https://example.com/p"])
+    assert citation_urls(resp) == ["https://Example.com/p/"]
+
+
 @respx.mock
 async def test_search_dedupes(settings):
     respx.post("https://api.perplexity.ai/search").mock(
