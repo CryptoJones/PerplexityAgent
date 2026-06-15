@@ -108,6 +108,32 @@ def citation_urls(chat_response: dict[str, Any]) -> list[str]:
     return out
 
 
+async def read_capped(resp: httpx.Response, max_bytes: int, exc_type: type[Exception]) -> bytes:
+    """Stream a response body, enforcing ``max_bytes`` as bytes arrive.
+
+    Shared by the API client and the TUI page fetcher so the size-cap guard
+    (a Content-Length pre-check plus a streamed abort) lives in exactly one
+    place. ``exc_type`` lets each caller raise its own error
+    (``PerplexityError`` / ``FetchError``).
+    """
+    declared = resp.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > max_bytes:
+        raise exc_type(
+            f"Response too large (Content-Length {declared} bytes > {max_bytes} cap); "
+            "rejected as a DoS guard."
+        )
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.aiter_bytes():
+        total += len(chunk)
+        if total > max_bytes:
+            raise exc_type(
+                f"Response too large (>{max_bytes} bytes cap); rejected as a DoS guard."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 class PerplexityClient:
     """Async client for the Perplexity Search + Sonar APIs."""
 
@@ -176,18 +202,8 @@ class PerplexityClient:
         )
 
     async def _read_capped(self, resp: httpx.Response) -> bytes:
-        """Stream the body, enforcing ``max_response_bytes`` as bytes arrive."""
-        cap = self._settings.max_response_bytes
-        chunks: list[bytes] = []
-        total = 0
-        async for chunk in resp.aiter_bytes():
-            total += len(chunk)
-            if total > cap:
-                raise PerplexityError(
-                    f"Response too large (>{cap} bytes cap); rejected as a DoS guard."
-                )
-            chunks.append(chunk)
-        return b"".join(chunks)
+        """Stream the body, enforcing the size cap (shared with the page fetcher)."""
+        return await read_capped(resp, self._settings.max_response_bytes, PerplexityError)
 
     async def search(
         self, query: str, max_results: int = 5, max_tokens_per_page: int = 1024

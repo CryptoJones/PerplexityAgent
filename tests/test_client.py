@@ -152,3 +152,16 @@ async def test_response_size_cap(settings):
     async with PerplexityClient(settings) as client:
         with pytest.raises(PerplexityError, match="too large"):
             await client.search("q")
+
+
+@respx.mock
+async def test_response_content_length_rejected_before_read(settings):
+    # The shared read_capped helper gives the client the same Content-Length
+    # pre-check the page fetcher has (a huge declared size is refused up front).
+    settings.max_response_bytes = 100
+    respx.post("https://api.perplexity.ai/search").mock(
+        return_value=httpx.Response(200, headers={"content-length": "999999"}, content=b"")
+    )
+    async with PerplexityClient(settings) as client:
+        with pytest.raises(PerplexityError, match="Content-Length"):
+            await client.search("q")
