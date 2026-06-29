@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped four transitive dependencies off published advisories** (`pip-audit`, no
+  ignores): `cryptography` 48.0.0 → 49.0.0 (GHSA-537c-gmf6-5ccf), `msgpack` 1.1.2 →
+  1.2.1 (GHSA-6v7p-g79w-8964), `python-multipart` 0.0.30 → 0.0.32 (CVE-2026-53540),
+  and `starlette` 1.2.1 → 1.3.1 (PYSEC-2026-248, PYSEC-2026-249). Lockfile-only;
+  `pip-audit` is now clean (ruff/mypy/138 tests still green). Dependabot's grouped
+  `python-deps` PR missed these because they're transitive, not direct.
+
 ### Added
 
 - A lifecycle regression test: the stdio server must exit when the MCP client
