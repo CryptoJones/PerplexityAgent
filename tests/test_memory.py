@@ -126,7 +126,12 @@ def test_space_lookup_indexes_exist(tmp_path):
         r["name"]
         for r in s._conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
     }
-    assert {"idx_conversations_space", "idx_tabs_space", "idx_tabs_space_url"} <= names
+    assert {
+        "idx_conversations_space",
+        "idx_tabs_space",
+        "idx_tabs_space_url",
+        "idx_agent_responses_session",
+    } <= names
     s.close()
 
 
@@ -159,3 +164,26 @@ def test_default_store_path_under_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     p = default_store_path()
     assert p == tmp_path / "perplexity-agent" / "store.db"
+
+
+def test_agent_response_round_trip_is_session_scoped(tmp_path):
+    s = _store(tmp_path)
+    payload = {"id": "resp_1", "object": "response", "output": []}
+    s.save_response("resp_1", payload, session_id="session-a", now=1.0)
+    assert s.response("resp_1", session_id="session-a") == payload
+    assert s.response("resp_1", session_id="session-b") is None
+    assert s.response_owner("resp_1") == "session-a"
+    s.close()
+
+
+def test_agent_response_retention_is_bounded_per_session(tmp_path):
+    s = Store(tmp_path / "store.db", max_responses_per_session=2)
+    for i in range(4):
+        response_id = f"resp_{i}"
+        s.save_response(response_id, {"id": response_id}, session_id="session-a", now=float(i))
+    s.save_response("resp_other", {"id": "resp_other"}, session_id="session-b", now=9.0)
+    assert s.response("resp_0", session_id="session-a") is None
+    assert s.response("resp_2", session_id="session-a") is not None
+    assert s.response("resp_3", session_id="session-a") is not None
+    assert s.response("resp_other", session_id="session-b") is not None
+    s.close()

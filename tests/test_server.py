@@ -24,6 +24,7 @@ def _settings():
         max_retries=0,
         rate_per_minute=6000,
         rate_burst=1000,
+        store_path=":memory:",
     )
 
 
@@ -32,12 +33,32 @@ def _text(result):
     return result.content[0].text
 
 
+def _agent_response(response_id="resp_1", output=None):
+    return {
+        "created_at": 1,
+        "id": response_id,
+        "model": "openai/gpt-5.5",
+        "object": "response",
+        "output": output or [],
+        "status": "completed",
+    }
+
+
 async def test_list_tools_exposes_all():
     mcp, _ = build_server(_settings())
     async with connect(mcp._mcp_server) as client:
         tools = sorted(t.name for t in (await client.list_tools()).tools)
     assert tools == [
-        "deep_research", "perplexity_search", "retrieve", "server_metrics", "sonar_ask"
+        "deep_research",
+        "fetch_url",
+        "finance_search",
+        "people_search",
+        "perplexity_search",
+        "responses_create",
+        "responses_retrieve",
+        "retrieve",
+        "server_metrics",
+        "sonar_ask",
     ]
 
 
@@ -54,15 +75,14 @@ async def test_large_result_offloaded_and_retrievable():
     # A result that overflows the (tiny, for the test) budget is bounded into a
     # {truncated, retrieve_key} envelope; the retrieve tool fetches the original.
     big = {"results": [{"url": f"https://a.com/{i}", "blob": "x" * 100} for i in range(50)]}
-    respx.post("https://api.perplexity.ai/search").mock(
-        return_value=httpx.Response(200, json=big)
-    )
+    respx.post("https://api.perplexity.ai/search").mock(return_value=httpx.Response(200, json=big))
     settings = Settings(
         api_key=SecretStr("pplx-testkey1234567890"),
         max_retries=0,
         rate_per_minute=6000,
         rate_burst=1000,
         max_tool_output_chars=300,
+        store_path=":memory:",
     )
     mcp, _ = build_server(settings)
     async with connect(mcp._mcp_server) as client:
@@ -93,6 +113,200 @@ async def test_search_tool_roundtrip():
 
 
 @respx.mock
+async def test_search_tool_forwards_advanced_filters():
+    route = respx.post("https://api.perplexity.ai/search").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        await client.call_tool(
+            "perplexity_search",
+            {
+                "query": "space",
+                "search_domain_filter": ["nasa.gov"],
+                "search_recency_filter": "week",
+            },
+        )
+    body = json.loads(route.calls.last.request.content)
+    assert body["search_domain_filter"] == ["nasa.gov"]
+    assert body["search_recency_filter"] == "week"
+
+
+@respx.mock
+async def test_responses_create_roundtrip_with_state_and_multimodal_input():
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(
+        return_value=httpx.Response(
+            200,
+            json=_agent_response("resp_2"),
+        )
+    )
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        result = await client.call_tool(
+            "responses_create",
+            {
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "describe"},
+                            {
+                                "type": "input_image",
+                                "image_url": "https://example.com/image.png",
+                            },
+                        ],
+                    }
+                ],
+                "model": "openai/gpt-5.5",
+                "reasoning": {"effort": "high"},
+                "tools": [{"type": "web_search"}],
+                "store": True,
+                "previous_response_id": "resp_1",
+            },
+        )
+        cached = await client.call_tool("responses_retrieve", {"response_id": "resp_2"})
+    assert json.loads(_text(result))["id"] == "resp_2"
+    assert json.loads(_text(cached))["id"] == "resp_2"
+    body = json.loads(route.calls.last.request.content)
+    assert body["store"] is True
+    assert body["previous_response_id"] == "resp_1"
+    assert body["input"][0]["content"][1]["type"] == "input_image"
+
+
+@respx.mock
+async def test_responses_retrieve_roundtrip():
+    route = respx.get("https://api.perplexity.ai/v1/agent/resp_2").mock(
+        return_value=httpx.Response(200, json=_agent_response("resp_2"))
+    )
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        result = await client.call_tool("responses_retrieve", {"response_id": "resp_2"})
+    assert route.called
+    assert json.loads(_text(result))["id"] == "resp_2"
+
+
+@respx.mock
+async def test_finance_search_enables_builtin_tool_and_hints():
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(
+        return_value=httpx.Response(200, json=_agent_response("resp_fin"))
+    )
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        await client.call_tool(
+            "finance_search",
+            {"query": "current valuation", "categories": ["quote"], "tickers": ["NVDA"]},
+        )
+    body = json.loads(route.calls.last.request.content)
+    assert body["tools"] == [{"type": "finance_search"}]
+    assert "NVDA" in body["input"]
+    assert "quote" in body["input"]
+
+
+@respx.mock
+async def test_people_search_uses_people_index():
+    route = respx.post("https://api.perplexity.ai/search").mock(
+        return_value=httpx.Response(200, json={"results": [{"title": "Ada"}]})
+    )
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        result = await client.call_tool("people_search", {"query": "Ada Lovelace"})
+    assert "Ada" in _text(result)
+    assert json.loads(route.calls.last.request.content)["search_type"] == "people"
+
+
+@respx.mock
+async def test_fetch_url_tool_uses_hardened_fetcher(monkeypatch):
+    import perplexity_agent.fetch as fetch_mod
+
+    monkeypatch.setattr(
+        fetch_mod.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+    respx.get("https://93.184.216.34/article").mock(
+        return_value=httpx.Response(200, html="<title>Article</title><p>safe text</p>")
+    )
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        result = await client.call_tool("fetch_url", {"url": "https://example.com/article"})
+    payload = json.loads(_text(result))
+    assert payload["contents"][0]["title"] == "Article"
+    assert "safe text" in payload["contents"][0]["snippet"]
+
+
+@respx.mock
+async def test_fetch_url_tool_accepts_bounded_url_list(monkeypatch):
+    import perplexity_agent.fetch as fetch_mod
+
+    monkeypatch.setattr(
+        fetch_mod.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+    respx.get("https://93.184.216.34/a").mock(
+        return_value=httpx.Response(200, html="<title>A</title><p>first</p>")
+    )
+    respx.get("https://93.184.216.34/b").mock(
+        return_value=httpx.Response(200, html="<title>B</title><p>second</p>")
+    )
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        result = await client.call_tool(
+            "fetch_url",
+            {"urls": ["https://example.com/a", "https://example.com/b"], "max_urls": 2},
+        )
+    payload = json.loads(_text(result))
+    assert [item["title"] for item in payload["contents"]] == ["A", "B"]
+
+
+@respx.mock
+async def test_responses_create_auto_executes_registered_functions():
+    first = _agent_response(
+        output=[
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "multiply",
+                "arguments": '{"a":6,"b":7}',
+            }
+        ]
+    )
+    second = _agent_response("resp_done")
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(
+        side_effect=[httpx.Response(200, json=first), httpx.Response(200, json=second)]
+    )
+    mcp, _ = build_server(
+        _settings(), function_registry={"multiply": lambda args: args["a"] * args["b"]}
+    )
+    async with connect(mcp._mcp_server) as client:
+        tools = {tool.name for tool in (await client.list_tools()).tools}
+        assert "registered_function_call" in tools
+        direct = await client.call_tool(
+            "registered_function_call", {"name": "multiply", "arguments": {"a": 3, "b": 4}}
+        )
+        result = await client.call_tool(
+            "responses_create",
+            {
+                "input": "multiply 6 by 7",
+                "model": "openai/gpt-5.5",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "multiply",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+                "auto_execute_functions": True,
+            },
+        )
+    assert json.loads(_text(direct))["output"] == 12
+    assert json.loads(_text(result))["id"] == "resp_done"
+    followup = json.loads(route.calls[1].request.content)
+    assert followup["input"][0]["output"] == "42"
+
+
+@respx.mock
 async def test_sonar_ask_tool_roundtrip():
     respx.post("https://api.perplexity.ai/chat/completions").mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "grounded"}}]})
@@ -103,6 +317,28 @@ async def test_sonar_ask_tool_roundtrip():
             "sonar_ask", {"question": "why?", "model": "sonar-pro", "system_prompt": "cite"}
         )
     assert "grounded" in _text(result)
+
+
+@respx.mock
+async def test_sonar_ask_routes_provider_models_to_agent_api():
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(
+        return_value=httpx.Response(200, json=_agent_response("resp_agent"))
+    )
+    mcp, _ = build_server(_settings())
+    async with connect(mcp._mcp_server) as client:
+        result = await client.call_tool(
+            "sonar_ask",
+            {
+                "question": "why?",
+                "model": "openai/gpt-5.5",
+                "reasoning": {"effort": "high"},
+                "max_output_tokens": 512,
+            },
+        )
+    assert json.loads(_text(result))["id"] == "resp_agent"
+    body = json.loads(route.calls.last.request.content)
+    assert body["model"] == "openai/gpt-5.5"
+    assert body["reasoning"] == {"effort": "high"}
 
 
 @respx.mock

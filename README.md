@@ -9,7 +9,7 @@
 A simple, **security-hardened** [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP) server that gives AI agents — [Claude Code](https://claude.com/claude-code),
 Hermes, or any MCP client — access to the [Perplexity](https://docs.perplexity.ai)
-Search and Sonar APIs.
+Search, Sonar, and Responses-compatible Agent APIs.
 
 It follows a retrieval-first reference architecture (search and synthesis kept
 separate, citations validated against retrieval metadata) and applies the defensive
@@ -26,6 +26,14 @@ controls from the NSA's *Model Context Protocol (MCP): Security Design Considera
 | `perplexity_search` | Ranked web results from the Perplexity Search API. |
 | `sonar_ask` | A grounded answer from Sonar / Sonar Pro (OpenAI-compatible chat). |
 | `deep_research` | Multi-step pipeline: decompose → search each sub-question → dedupe → synthesize (JSON schema) → **validate citations** → return a cited report with a `validation_report`. |
+| `responses_create` | Full Agent API: reasoning, multimodal input, built-in/custom tools, streaming events, and response chaining. |
+| `responses_retrieve` | Retrieve a stored Agent response snapshot by its `resp_` ID. |
+| `finance_search` | Agent response with Perplexity's structured finance tool enabled. |
+| `people_search` | Structured results from the Search API's people index. |
+| `fetch_url` | Fetch a bounded set of public URLs through the SSRF-hardened page fetcher. |
+| `registered_function_call` | Invoke an operator-registered Python handler; present only when a registry is configured. |
+| `retrieve` | Retrieve a result offloaded because it exceeded the output budget. |
+| `server_metrics` | In-process request, latency, and rate-limit counters. |
 
 ## Requirements
 
@@ -122,6 +130,67 @@ Returns the raw Search API payload, e.g.:
 }
 ```
 
+Optional Search API filters include `search_domain_filter` (up to 20 domains),
+`search_language_filter`, `search_recency_filter`, and published/last-updated
+before/after dates in `M/D/YYYY` form.
+
+### `responses_create`
+
+Calls `POST /v1/agent` using Perplexity's OpenAI Responses-compatible request
+shape. It accepts text or message-array `input`, provider-qualified `model` (or a
+fallback `models` list / `preset`), `reasoning`, `response_format`, `tools`,
+`max_output_tokens`, and `max_steps`.
+
+Set `store: true`, use `responses_retrieve` to read the returned ID later, and pass
+that ID as `previous_response_id` to continue the response. Snapshots are kept in
+the local SQLite store and scoped to the originating MCP session in addition to
+Perplexity's upstream persistence. Retention defaults to the newest 100 snapshots
+per session and is configurable with `PERPLEXITY_MAX_RESPONSES_PER_SESSION`.
+
+Function tools support both client-driven and automatic chaining. Pass their JSON
+schemas in `tools`; client-driven callers can submit a `function_call_output` with
+the returned `call_id`. Server operators can instead pass an allowlisted
+`function_registry` to `build_server()` and set `auto_execute_functions: true`.
+Only registered handlers execute, arguments and outputs are bounded, errors become
+tool outputs, and continuation rounds are capped. Registered handlers are also
+available to MCP clients through `registered_function_call`.
+
+For multimodal input, use message content parts:
+
+```json
+{
+  "input": [{
+    "type": "message",
+    "role": "user",
+    "content": [
+      {"type": "input_text", "text": "Describe this image"},
+      {"type": "input_image", "image_url": "https://example.com/image.png"}
+    ]
+  }],
+  "model": "openai/gpt-5.5"
+}
+```
+
+When `stream: true`, the API's SSE events (`response.created`, text deltas,
+`response.completed`, and other item events) are parsed and returned in an
+`events` array. MCP tool calls are request/response, so this surface collects the
+events rather than emitting incremental MCP messages.
+
+### Specialized search and fetch tools
+
+- `finance_search` takes a natural-language `query` plus optional `categories`
+  and `tickers` hints, and enables the Agent API's `finance_search` tool.
+- `people_search` takes `query`, `max_results`, and `max_tokens_per_page`, and
+  routes the standard Search API through `search_type="people"`.
+- `fetch_url` accepts either `url` or a `urls` list plus an explicit `max_urls`
+  cap (1–10), and returns extracted `contents` with final URLs, titles, text, and
+  prompt-injection flags. It validates and pins every redirect hop to prevent SSRF
+  and DNS rebinding.
+
+Finance caching is disabled by default because prices change rapidly. Set
+`PERPLEXITY_FINANCE_CACHE_TTL_S` to a small value (maximum 300 seconds) to enable
+a bounded per-client cache for identical category/ticker queries.
+
 ### `sonar_ask`
 
 A grounded answer from Sonar (OpenAI-compatible chat completion).
@@ -129,8 +198,11 @@ A grounded answer from Sonar (OpenAI-compatible chat completion).
 | Param | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `question` | string | — (required) | 1–4096 chars |
-| `model` | string | `"sonar"` | `"sonar"` or `"sonar-pro"` only |
+| `model` | string | `"sonar"` | legacy `sonar`/`sonar-pro` or an Agent `provider/model` ID |
 | `system_prompt` | string | `null` | optional, ≤ 4096 chars |
+| `reasoning` | object | `null` | optional Agent reasoning effort (`low` through `max`) |
+| `response_format` | object | `null` | optional text/JSON/JSON-schema output format |
+| `max_output_tokens` | int | `null` | required for Anthropic Agent models |
 
 ```json
 {
