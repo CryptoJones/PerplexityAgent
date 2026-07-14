@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-13
+
 ### Security
 
 - **Bumped four transitive dependencies off published advisories** (`pip-audit`, no
@@ -18,6 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Responses-compatible Agent API support** through the new `responses_create`
+  MCP tool and `PerplexityClient.create_response()`: provider-qualified models and
+  fallback chains, presets, reasoning effort, structured outputs, multimodal
+  text/image input, typed output/event parsing, built-in and custom function-tool
+  schemas, bounded allowlisted Python-handler execution with automatic chaining,
+  upstream `store`/`previous_response_id` continuity plus session-scoped SQLite
+  snapshots/retrieval, and parsed SSE event collection.
+- Specialized `finance_search`, `people_search`, and `fetch_url` MCP tools. Finance
+  uses the Agent API's structured finance tool, people search routes through the
+  Search API's people index, and URL fetch reuses the existing SSRF/DNS-rebinding
+  defenses while surfacing prompt-injection flags.
+- Advanced Search API domain, language, recency, publication-date, and
+  last-updated filters.
+- Bounded multi-URL fetches (`max_urls` 1–10), an opt-in bounded finance cache,
+  and an MCP-callable surface for server-operator-registered Python functions.
 - A lifecycle regression test: the stdio server must exit when the MCP client
   closes the pipe, never linger deaf and silently discard requests (the
   failure mode diagnosed in obsidian-mcp, omind#49). Verified the server
@@ -146,7 +163,8 @@ validate citations) over stdio, with an optional bearer-token HTTP transport.
 Strict pydantic input validation, token-bucket rate limiting, redacting JSON
 audit log, and CI (ruff, pytest, pip-audit, gitleaks, CodeQL).
 
-[Unreleased]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.2.0...HEAD
+[Unreleased]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.3.0...HEAD
+[0.3.0]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://codeberg.org/CryptoJones/PerplexityAgent/releases/tag/v0.1.0
 

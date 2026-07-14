@@ -1,9 +1,9 @@
-"""SSRF-hardened URL fetcher for the interactive TUI.
+"""SSRF-hardened URL fetcher for the TUI and explicit MCP fetch tool.
 
 This is the only egress path in the project other than ``api.perplexity.ai`` and
-it is reachable **solely from the interactive TUI**, never from an MCP tool. It
-mirrors the DoS guards already in ``client.py`` (per-request timeout, response-size
-cap) and adds the controls a fetch of *attacker-influenceable* URLs needs:
+is reachable from the interactive TUI and explicit ``fetch_url`` MCP tool. It
+mirrors the DoS guards already in ``client.py`` (per-request timeout,
+response-size cap) and adds the controls a fetch of attacker-influenceable URLs needs:
 
 - scheme allowlist (``http`` / ``https`` only) — no ``file://``, ``gopher://`` …;
 - DNS resolution + rejection of private / loopback / link-local / reserved IPs

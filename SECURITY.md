@@ -22,8 +22,8 @@ operating-system account the server runs under.
 | NSA recommendation | How PerplexityAgent implements it |
 | --- | --- |
 | **Choose supported MCP projects** | Built on the official `mcp` Python SDK (FastMCP). Dependencies are pinned and fully locked in `uv.lock`. |
-| **Design for boundaries / least privilege** | Default **stdio** transport runs locally with no network exposure. No shell execution, no filesystem writes (except an optional, explicitly-configured audit-log path). Egress is only to `api.perplexity.ai`. The API key lives only in the client layer and is **never** returned by a tool. The MCP server's only egress is `api.perplexity.ai`; the optional TUI adds an SSRF-guarded page fetcher (see below) that is never reachable from a tool. |
-| **Validate parameters** | Every tool input is validated against a strict `pydantic` model (`schemas.py`) with bounded string lengths (≤ 4 KB), numeric ranges (`max_results` 1–20, `num_subquestions` 1–8), and a `model` enum. Unknown fields are rejected (`extra="forbid"`), preventing parameter smuggling. |
+| **Design for boundaries / least privilege** | Default **stdio** transport runs locally with no network exposure. No shell execution, no filesystem writes (except an optional, explicitly-configured audit-log path). The API key lives only in the client layer and is **never** returned by a tool. Egress goes to `api.perplexity.ai`; the optional TUI and explicit `fetch_url` tool add an SSRF-guarded public-page fetcher (see below). |
+| **Validate parameters** | Every tool input is validated against a strict `pydantic` model (`schemas.py`) with bounded strings/arrays (including Agent input, model chains, domains, tools, and image payloads), numeric ranges (`max_results` 1–20, `max_steps` 1–10), and constrained enums. Unknown fields are rejected (`extra="forbid"`), preventing parameter smuggling. |
 | **Constrain & sandbox tool execution** | Per-request timeouts, a hard response-size cap, and capped retries with jittered backoff (`client.py`). Run the process under seccomp/AppArmor/SELinux or in a container for OS-level isolation (see below). |
 | **Sign & verify messages (transport)** | stdio mode is local-trusted. The optional HTTP transport **refuses to start without a bearer token**, binds to localhost by default, and rejects any request lacking the exact `Authorization: Bearer <token>` header. Terminate TLS at a reverse proxy in front of it. |
 | **Filter & monitor outputs / chained execution** | Perplexity responses are treated as **untrusted input** to the next stage. `deep_research` scans retrieved snippets for indirect-prompt-injection patterns and surfaces them in `security_flags`. Citations are taken only from API metadata, never from model free-text. |
@@ -34,12 +34,10 @@ operating-system account the server runs under.
 
 ## Interactive TUI page fetcher (added egress surface)
 
-The optional `perplexity-agent tui` (the `tui` extra) adds a **page fetcher**
-(`fetch.py`) so commands like `/open <url>` can pull a page into context — the only
-egress path other than `api.perplexity.ai`. It is reachable **only from the
-interactive TUI**, never from an MCP tool, so the agent-facing threat model and tool
-surface are unchanged. Because the fetched URL is attacker-influenceable, the
-fetcher applies SSRF + DoS controls mirroring the API client:
+The **page fetcher** (`fetch.py`) backs both the optional TUI's `/open <url>` command
+and the explicit `fetch_url` MCP tool—the only egress path other than
+`api.perplexity.ai`. Because the fetched URL is attacker-influenceable, the fetcher
+applies SSRF + DoS controls mirroring the API client:
 
 - **Scheme allowlist** — only `http` / `https`; `file://`, `gopher://`, `data:` etc.
   are rejected.
@@ -79,6 +77,14 @@ owner-only (0600, directory 0700), tabs are deduplicated per space+URL, and each
 space retains only the most-recent tabs (default 50, configurable). Conversation
 history is unbounded by default — it is never auto-deleted — but an operator can
 cap it with `PERPLEXITY_MAX_HISTORY_PER_SPACE`.
+
+Stored Agent response snapshots share this owner-only SQLite database. Each row is
+scoped to the originating MCP client session; a known response ID owned by another
+session is rejected before continuation or retrieval. Retention is bounded per
+session (default 100 snapshots). Automatic function chaining is opt-in and can
+invoke only server-operator-registered handlers. Function JSON
+schemas, arguments, outputs, and continuation rounds are all bounded; arbitrary
+Python supplied by an MCP caller is never evaluated.
 
 ## Secret handling
 

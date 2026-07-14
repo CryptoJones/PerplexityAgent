@@ -1,3 +1,4 @@
+import json
 import threading
 
 import httpx
@@ -11,7 +12,19 @@ from perplexity_agent.client import (
     PerplexityError,
     canonical_url,
     dedupe_results,
+    response_output_text,
 )
+
+
+def _agent_response(response_id="resp_1", output=None):
+    return {
+        "created_at": 1,
+        "id": response_id,
+        "model": "openai/gpt-5.5",
+        "object": "response",
+        "output": output or [],
+        "status": "completed",
+    }
 
 
 def test_canonical_url():
@@ -47,6 +60,144 @@ async def test_search_calls_endpoint(settings):
     assert out["results"][0]["url"] == "https://a.com"
     sent = route.calls.last.request
     assert sent.headers["authorization"].startswith("Bearer pplx-")
+
+
+@respx.mock
+async def test_search_sends_filters_and_people_type(settings):
+    route = respx.post("https://api.perplexity.ai/search").mock(
+        return_value=httpx.Response(200, json={"results": []})
+    )
+    async with PerplexityClient(settings) as client:
+        await client.search(
+            "recent space news",
+            search_domain_filter=["nasa.gov"],
+            search_recency_filter="week",
+        )
+        await client.people_search("VP Engineering at Stripe")
+    first = json.loads(route.calls[0].request.content)
+    second = json.loads(route.calls[1].request.content)
+    assert first["search_domain_filter"] == ["nasa.gov"]
+    assert first["search_recency_filter"] == "week"
+    assert second["search_type"] == "people"
+
+
+@respx.mock
+async def test_create_response_calls_agent_endpoint(settings):
+    response = _agent_response(
+        output=[
+            {
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hello"}],
+            }
+        ]
+    )
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(
+        return_value=httpx.Response(200, json=response)
+    )
+    async with PerplexityClient(settings) as client:
+        out = await client.create_response(
+            {"input": "hi", "model": "openai/gpt-5.5", "stream": False}
+        )
+    assert response_output_text(out) == "hello"
+    assert "stream" not in json.loads(route.calls.last.request.content)
+
+
+@respx.mock
+async def test_retrieve_response_calls_agent_get_endpoint(settings):
+    route = respx.get("https://api.perplexity.ai/v1/agent/resp_123").mock(
+        return_value=httpx.Response(200, json=_agent_response("resp_123"))
+    )
+    async with PerplexityClient(settings) as client:
+        out = await client.retrieve_response("resp_123")
+    assert route.called
+    assert out["id"] == "resp_123"
+
+
+@respx.mock
+async def test_create_response_rejects_malformed_typed_payload(settings):
+    respx.post("https://api.perplexity.ai/v1/agent").mock(
+        return_value=httpx.Response(200, json={"id": "resp_broken", "output": []})
+    )
+    async with PerplexityClient(settings) as client:
+        with pytest.raises(PerplexityError, match="Unexpected Agent API response shape"):
+            await client.create_response({"input": "hi"})
+
+
+@respx.mock
+async def test_stream_response_parses_sse_events(settings):
+    completed = _agent_response()
+    body = (
+        f"data: {json.dumps({'type': 'response.created', 'response': completed})}\n\n"
+        'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+        f"data: {json.dumps({'type': 'response.completed', 'response': completed})}\n\n"
+        "data: [DONE]\n\n"
+    )
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(
+        return_value=httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+    )
+    async with PerplexityClient(settings) as client:
+        events = [event async for event in client.stream_response({"input": "hi"})]
+    assert [event["type"] for event in events] == [
+        "response.created",
+        "response.output_text.delta",
+        "response.completed",
+    ]
+    assert json.loads(route.calls.last.request.content)["stream"] is True
+
+
+@respx.mock
+async def test_function_tool_chain_executes_registered_handler(settings):
+    first = _agent_response(
+        output=[
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "add",
+                "arguments": '{"a":2,"b":3}',
+            }
+        ]
+    )
+    second = _agent_response("resp_2")
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(
+        side_effect=[httpx.Response(200, json=first), httpx.Response(200, json=second)]
+    )
+
+    async with PerplexityClient(settings) as client:
+        out = await client.run_response_with_tools(
+            {
+                "input": "add numbers",
+                "model": "openai/gpt-5.5",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "add",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+            },
+            {"add": lambda args: args["a"] + args["b"]},
+        )
+    assert out["id"] == "resp_2"
+    followup = json.loads(route.calls[1].request.content)
+    assert followup["previous_response_id"] == "resp_1"
+    assert followup["input"] == [
+        {"type": "function_call_output", "call_id": "call_1", "output": "5"}
+    ]
+
+
+@respx.mock
+async def test_finance_cache_is_bounded_opt_in(settings):
+    settings.finance_cache_ttl_s = 30
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(
+        return_value=httpx.Response(200, json=_agent_response("resp_fin"))
+    )
+    async with PerplexityClient(settings) as client:
+        first = await client.search_finance("quote", tickers=["NVDA"])
+        second = await client.search_finance("quote", tickers=["NVDA"])
+    assert first == second
+    assert route.call_count == 1
 
 
 @respx.mock
@@ -150,9 +301,7 @@ async def test_retry_after_is_capped(settings, monkeypatch):
 @respx.mock
 async def test_response_size_cap(settings):
     huge = {"results": [{"blob": "x" * (settings.max_response_bytes + 100)}]}
-    respx.post("https://api.perplexity.ai/search").mock(
-        return_value=httpx.Response(200, json=huge)
-    )
+    respx.post("https://api.perplexity.ai/search").mock(return_value=httpx.Response(200, json=huge))
     async with PerplexityClient(settings) as client:
         with pytest.raises(PerplexityError, match="too large"):
             await client.search("q")

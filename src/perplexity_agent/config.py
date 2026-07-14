@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     timeout: float = Field(default=60.0, gt=0, le=300)
     max_response_bytes: int = Field(default=5 * 1024 * 1024, gt=0)
     max_retries: int = Field(default=3, ge=0, le=8)
+    # Finance results can contain live prices, so caching is opt-in and tightly
+    # capped. Set a small TTL only when duplicate-query cost outweighs freshness.
+    finance_cache_ttl_s: float = Field(default=0.0, ge=0, le=300)
 
     # --- Output efficiency (token budgeting; context-flood guard) ---
     # Per-result char budget handed to the model. A result over this is bounded
@@ -56,9 +59,9 @@ class Settings(BaseSettings):
 
     # --- Interactive TUI: page fetcher + local store (used only by `tui`) ---
     # The fetcher is the only egress path other than api.perplexity.ai. It is
-    # reachable solely from the interactive TUI, never via the MCP tools. SSRF
-    # controls live in fetch.py; these knobs tune them. Private/loopback/link-local
-    # targets are denied by default (fetch_allow_private=False).
+    # reachable from the interactive TUI and the explicit fetch_url MCP tool.
+    # SSRF controls live in fetch.py; these knobs tune them. Private/loopback/
+    # link-local targets are denied by default (fetch_allow_private=False).
     fetch_user_agent: str = "PerplexityAgent-TUI/0.2 (+https://codeberg.org/CryptoJones/PerplexityAgent)"
     fetch_allow_private: bool = False
     # Where the TUI keeps its sqlite store (history, tabs, spaces). None ->
@@ -72,6 +75,7 @@ class Settings(BaseSettings):
     # the N most-recent rows per Space, or to nothing/blank to keep everything.
     max_tabs_per_space: int | None = Field(default=50, gt=0)
     max_history_per_space: int | None = Field(default=None, gt=0)
+    max_responses_per_session: int = Field(default=100, gt=0, le=10_000)
 
     @field_validator("max_tabs_per_space", "max_history_per_space", mode="before")
     @classmethod

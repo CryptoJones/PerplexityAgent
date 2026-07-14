@@ -14,10 +14,12 @@ keeps at most ``max_tabs_per_space`` tabs (and, when configured, at most
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .config import Settings
 
@@ -42,11 +44,20 @@ CREATE TABLE IF NOT EXISTS spaces (
     name      TEXT PRIMARY KEY,
     created   REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_responses (
+    response_id TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    created     REAL NOT NULL,
+    PRIMARY KEY (response_id, session_id)
+);
 -- history()/tabs() and the retention/dedup queries all filter by space (and url);
 -- index them so the lookups stay fast as these tables grow.
 CREATE INDEX IF NOT EXISTS idx_conversations_space ON conversations(space, id);
 CREATE INDEX IF NOT EXISTS idx_tabs_space ON tabs(space, id);
 CREATE INDEX IF NOT EXISTS idx_tabs_space_url ON tabs(space, url);
+CREATE INDEX IF NOT EXISTS idx_agent_responses_session
+    ON agent_responses(session_id, created);
 -- Retire the legacy `facts` table. It was never read or written, so dropping it
 -- destroys no user data; this just cleans it out of stores created earlier.
 DROP TABLE IF EXISTS facts;
@@ -91,10 +102,12 @@ class Store:
         *,
         max_tabs_per_space: int | None = _DEFAULT_MAX_TABS_PER_SPACE,
         max_history_per_space: int | None = None,
+        max_responses_per_session: int = 100,
     ) -> None:
         self._path = Path(path)
         self._max_tabs = max_tabs_per_space
         self._max_history = max_history_per_space
+        self._max_responses = max_responses_per_session
         on_disk = str(self._path) != ":memory:"
         if on_disk:
             self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -113,6 +126,7 @@ class Store:
             path,
             max_tabs_per_space=settings.max_tabs_per_space,
             max_history_per_space=settings.max_history_per_space,
+            max_responses_per_session=settings.max_responses_per_session,
         )
 
     def close(self) -> None:
@@ -180,3 +194,44 @@ class Store:
     def spaces(self) -> list[str]:
         rows = self._conn.execute("SELECT name FROM spaces ORDER BY name").fetchall()
         return [r["name"] for r in rows]
+
+    # --- Agent API responses ----------------------------------------------
+    def save_response(
+        self,
+        response_id: str,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        now: float,
+    ) -> None:
+        """Persist a response snapshot, scoped to the originating MCP session."""
+        encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO agent_responses "
+            "(response_id, session_id, payload, created) VALUES (?, ?, ?, ?)",
+            (response_id, session_id, encoded, now),
+        )
+        self._conn.execute(
+            "DELETE FROM agent_responses WHERE session_id = ? AND rowid NOT IN "
+            "(SELECT rowid FROM agent_responses WHERE session_id = ? "
+            "ORDER BY created DESC LIMIT ?)",
+            (session_id, session_id, self._max_responses),
+        )
+        self._conn.commit()
+
+    def response(self, response_id: str, *, session_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT payload FROM agent_responses WHERE response_id = ? AND session_id = ?",
+            (response_id, session_id),
+        ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row["payload"])
+        return value if isinstance(value, dict) else None
+
+    def response_owner(self, response_id: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT session_id FROM agent_responses WHERE response_id = ? LIMIT 1",
+            (response_id,),
+        ).fetchone()
+        return None if row is None else str(row["session_id"])
