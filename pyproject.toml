@@ -11,7 +11,7 @@ keywords = ["mcp", "perplexity", "sonar", "research", "agent", "llm"]
 # Dependencies are pinned with compatible-release bounds; uv.lock fully locks them.
 # (NSA recommendation: choose supported projects, pin dependencies, track vulns.)
 dependencies = [
-    "mcp>=1.28.0,<2.0.0",
+    "mcp>=1.28.1,<2.0.0",
     "httpx>=0.28.1,<0.29.0",
     "pydantic>=2.13.0,<3.0.0",
     "pydantic-settings>=2.14.2,<3.0.0",
@@ -24,14 +24,14 @@ dev = [
     "pytest-cov>=6.0.0",
     "respx>=0.23.1",
     "pip-audit>=2.10.1",
-    "mypy>=1.9",
-    "ruff>=0.15.18",
+    "mypy>=2.3.0",
+    "ruff>=0.15.22",
 ]
 # Interactive terminal UI (`perplexity-agent tui`). Optional so the core MCP
 # server install stays lean; httpx is already a core dependency.
 tui = [
-    "textual>=8.2.7,<9.0.0",
-    "selectolax>=0.4.10,<0.5",
+    "textual>=8.2.8,<9.0.0",
+    "selectolax>=0.4.11,<0.5",
 ]
 
 [project.scripts]
