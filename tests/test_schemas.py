@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from perplexity_agent.schemas import (
     DeepResearchInput,
     FetchUrlInput,
+    InputImage,
     ResponseCreateInput,
     ResponseRetrieveInput,
     ResponsesResponse,
@@ -108,6 +109,16 @@ def test_agent_response_supports_multimodal_and_function_chaining():
     assert value.store is True
     assert value.previous_response_id == "resp_123"
     assert value.tools and value.tools[1].type == "function"
+
+
+def test_input_image_requires_an_http_url():
+    assert str(InputImage(image_url="https://example.com/image.png").image_url).startswith(
+        "https://"
+    )
+    with pytest.raises(ValidationError):
+        InputImage(image_url="not a URL")
+    with pytest.raises(ValidationError):
+        InputImage(image_url="data:image/png;base64,AAAA")
 
 
 def test_agent_response_requires_anthropic_token_limit():

@@ -11,7 +11,7 @@ keywords = ["mcp", "perplexity", "sonar", "research", "agent", "llm"]
 # Dependencies are pinned with compatible-release bounds; uv.lock fully locks them.
 # (NSA recommendation: choose supported projects, pin dependencies, track vulns.)
 dependencies = [
-    "mcp>=1.28.0,<2.0.0",
+    "mcp>=1.28.1,<2.0.0",
     "httpx>=0.28.1,<0.29.0",
     "pydantic>=2.13.0,<3.0.0",
     "pydantic-settings>=2.14.2,<3.0.0",

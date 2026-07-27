@@ -99,7 +99,7 @@ class InputText(_StrictModel):
 
 class InputImage(_StrictModel):
     type: Literal["input_image"] = "input_image"
-    image_url: str = Field(..., min_length=1, max_length=8 * 1024 * 1024)
+    image_url: HttpUrl
     detail: Literal["auto", "low", "high"] = "auto"
 
 

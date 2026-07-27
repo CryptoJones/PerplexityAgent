@@ -10,6 +10,8 @@ from __future__ import annotations
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from . import __version__
+
 
 class Settings(BaseSettings):
     """Runtime settings, populated from environment variables / ``.env``.
@@ -62,7 +64,10 @@ class Settings(BaseSettings):
     # reachable from the interactive TUI and the explicit fetch_url MCP tool.
     # SSRF controls live in fetch.py; these knobs tune them. Private/loopback/
     # link-local targets are denied by default (fetch_allow_private=False).
-    fetch_user_agent: str = "PerplexityAgent-TUI/0.2 (+https://codeberg.org/CryptoJones/PerplexityAgent)"
+    fetch_user_agent: str = (
+        f"PerplexityAgent-TUI/{__version__} "
+        "(+https://codeberg.org/CryptoJones/PerplexityAgent)"
+    )
     fetch_allow_private: bool = False
     # Where the TUI keeps its sqlite store (history, tabs, spaces). None ->
     # an XDG-style default under the user's data dir, resolved in memory.py.

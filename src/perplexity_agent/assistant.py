@@ -218,7 +218,7 @@ class Assistant:
             raw_groups = parsed.get("groups", [])
         except (ValueError, AttributeError, TypeError):
             # ValueError covers json.JSONDecodeError AND the "Unexpected Sonar
-            # response shape" ValueError that _content() raises on a body missing
+            # response shape" ValueError that message_content() raises on a body missing
             # choices/message — so a malformed response yields [], not a crash.
             raw_groups = []
         if not isinstance(raw_groups, list):

@@ -68,6 +68,16 @@ def test_offload_store_roundtrip_and_eviction():
     assert store.retrieve(k2) == "two"
 
 
+def test_offload_store_scopes_identical_content_to_authorized_owners():
+    store = efficiency.OffloadStore()
+    key_a = store.stash("secret payload", owner="session-a")
+    key_b = store.stash("secret payload", owner="session-b")
+    assert key_a != key_b
+    assert store.retrieve(key_a, owner="session-a") == "secret payload"
+    assert store.retrieve(key_a, owner="session-b") is None
+    assert store.retrieve(key_b, owner="session-b") == "secret payload"
+
+
 def test_bound_result_passthrough_when_small():
     result = {"a": 1}
     assert efficiency.bound_result(result, max_chars=1000) == result

@@ -135,7 +135,7 @@ def build_server(
             fields["usage"] = usage
         return fields
 
-    def _bound(result: dict[str, Any]) -> dict[str, Any]:
+    def _bound(ctx: Context, result: dict[str, Any]) -> dict[str, Any]:
         """Bound a result to the char budget, offloading the full value if over.
 
         For a dict input ``bound_result`` returns either the dict unchanged or a
@@ -143,7 +143,12 @@ def build_server(
         """
         return cast(
             dict[str, Any],
-            bound_result(result, max_chars=settings.max_tool_output_chars, store=offload_store),
+            bound_result(
+                result,
+                max_chars=settings.max_tool_output_chars,
+                store=offload_store,
+                owner=_session_id(ctx),
+            ),
         )
 
     def _truncated(bounded: Any) -> bool:
@@ -199,7 +204,7 @@ def build_server(
                 exclude_none=True,
             ),
         )
-        bounded = _bound(result)
+        bounded = _bound(ctx, result)
         audit.record(
             "tool_result",
             tool="perplexity_search",
@@ -232,6 +237,10 @@ def build_server(
 
         With ``stream=true``, SSE events are parsed and returned as a bounded event
         list because MCP tool calls themselves are request/response operations.
+        ``auto_execute_functions`` is a server-side control that executes only
+        operator-registered handlers until the response completes.
+        ``max_function_rounds`` bounds that server-side continuation loop; neither
+        option is forwarded as an Agent API request parameter.
         """
         args = ResponseCreateInput.model_validate(
             {
@@ -259,17 +268,6 @@ def build_server(
                 raise PerplexityError("previous_response_id belongs to another MCP session")
         if not 1 <= max_function_rounds <= 10:
             raise ValueError("max_function_rounds must be between 1 and 10")
-        call_id = _guard(
-            "responses_create",
-            {
-                "model": args.model,
-                "preset": args.preset,
-                "stream": args.stream,
-                "previous_response_id": args.previous_response_id,
-            },
-        )
-        started = time.monotonic()
-        result: dict[str, Any]
         if args.stream and auto_execute_functions:
             raise ValueError("auto_execute_functions cannot be combined with stream")
         if auto_execute_functions:
@@ -281,8 +279,22 @@ def build_server(
                 raise PerplexityError(
                     f"Unregistered function handlers requested: {sorted(unavailable)}"
                 )
+        call_id = _guard(
+            "responses_create",
+            {
+                "model": args.model,
+                "preset": args.preset,
+                "stream": args.stream,
+                "previous_response_id": args.previous_response_id,
+            },
+        )
+        started = time.monotonic()
+        result: dict[str, Any]
+        if auto_execute_functions:
             result = await _client(ctx).run_response_with_tools(
-                payload, function_registry, max_rounds=max_function_rounds
+                payload,
+                cast(Mapping[str, FunctionHandler], function_registry),
+                max_rounds=max_function_rounds,
             )
         elif args.stream:
             events = [event async for event in _client(ctx).stream_response(payload)]
@@ -304,7 +316,7 @@ def build_server(
             _response_store(ctx).save_response(
                 str(persisted["id"]), persisted, session_id=session_id, now=time.time()
             )
-        bounded = _bound(result)
+        bounded = _bound(ctx, result)
         audit.record(
             "tool_result",
             tool="responses_create",
@@ -330,7 +342,7 @@ def build_server(
             response_store.save_response(
                 args.response_id, result, session_id=session_id, now=time.time()
             )
-        bounded = _bound(result)
+        bounded = _bound(ctx, result)
         audit.record(
             "tool_result",
             tool="responses_retrieve",
@@ -375,7 +387,7 @@ def build_server(
             model=validated.model or args.model,
             max_output_tokens=validated.max_output_tokens,
         )
-        bounded = _bound(result)
+        bounded = _bound(ctx, result)
         audit.record(
             "tool_result",
             tool="finance_search",
@@ -402,7 +414,7 @@ def build_server(
         result = await _client(ctx).people_search(
             args.query, args.max_results, args.max_tokens_per_page
         )
-        bounded = _bound(result)
+        bounded = _bound(ctx, result)
         audit.record(
             "tool_result",
             tool="people_search",
@@ -423,19 +435,33 @@ def build_server(
         args = FetchUrlInput.model_validate({"urls": combined, "max_urls": max_urls})
         call_id = _guard("fetch_url", {"urls": [str(item) for item in args.urls]})
         started = time.monotonic()
-        pages = await asyncio.gather(*(_fetcher(ctx).fetch(str(item)) for item in args.urls))
-        result = {
-            "contents": [
+        pages = await asyncio.gather(
+            *(_fetcher(ctx).fetch(str(item)) for item in args.urls),
+            return_exceptions=True,
+        )
+        contents: list[dict[str, Any]] = []
+        for requested_url, page in zip(args.urls, pages, strict=True):
+            if isinstance(page, BaseException):
+                if not isinstance(page, Exception):
+                    raise page
+                contents.append(
+                    {
+                        "url": str(requested_url),
+                        "error": str(page),
+                        "error_type": type(page).__name__,
+                    }
+                )
+                continue
+            contents.append(
                 {
                     "url": page.final_url,
                     "title": page.title,
                     "snippet": page.text,
                     "injection_flags": page.injection_flags,
                 }
-                for page in pages
-            ]
-        }
-        bounded = _bound(result)
+            )
+        result = {"contents": contents}
+        bounded = _bound(ctx, result)
         audit.record(
             "tool_result",
             tool="fetch_url",
@@ -492,7 +518,7 @@ def build_server(
             result = await _client(ctx).chat(
                 messages, model=args.model, response_format=legacy_format
             )
-        bounded = _bound(result)
+        bounded = _bound(ctx, result)
         audit.record(
             "tool_result",
             tool="sonar_ask",
@@ -531,18 +557,24 @@ def build_server(
             max_results_per_subquestion=args.max_results_per_subquestion,
             use_model_decomposition=args.use_model_decomposition,
         )
-        bounded = _bound(result)
+        bounded = _bound(ctx, result)
+        validation_report = result.get("validation_report")
+        validation_passed = (
+            bool(validation_report.get("passed", False))
+            if isinstance(validation_report, Mapping)
+            else False
+        )
         audit.record(
             "tool_result",
             tool="deep_research",
-            validation_passed=result["validation_report"]["passed"],
+            validation_passed=validation_passed,
             truncated=_truncated(bounded),
             **_result_fields("deep_research", call_id, started, result),
         )
         return bounded
 
     @mcp.tool()
-    async def retrieve(key: str) -> dict[str, Any]:
+    async def retrieve(ctx: Context, key: str) -> dict[str, Any]:
         """Fetch the full value previously offloaded behind a ``retrieve_key``.
 
         When a tool result is over the output budget it's bounded and the full
@@ -551,7 +583,7 @@ def build_server(
         args = RetrieveInput(key=key)
         call_id = _guard("retrieve", {"key": args.key})
         started = time.monotonic()
-        payload = offload_store.retrieve(args.key)
+        payload = offload_store.retrieve(args.key, owner=_session_id(ctx))
         result: dict[str, Any] = (
             {"error": f"no offloaded value for key {args.key!r} (expired or unknown)"}
             if payload is None
@@ -563,7 +595,7 @@ def build_server(
         return result
 
     @mcp.tool()
-    async def server_metrics() -> dict[str, Any]:
+    async def server_metrics(ctx: Context) -> dict[str, Any]:
         """Report request/latency/rate-limit counters for this server process."""
         call_id = _guard("server_metrics", {})
         started = time.monotonic()
@@ -578,7 +610,9 @@ def build_server(
     if function_registry:
 
         @mcp.tool(name="registered_function_call")
-        async def registered_function_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        async def registered_function_call(
+            ctx: Context, name: str, arguments: dict[str, Any]
+        ) -> dict[str, Any]:
             """Invoke one server-operator-registered, allowlisted Python function."""
             args = RegisteredFunctionInput(name=name, arguments=arguments)
             handler = function_registry.get(args.name)
@@ -591,7 +625,7 @@ def build_server(
                 value = await value
             safe_value = json.loads(json.dumps(value, default=str))
             result = {"name": args.name, "output": safe_value}
-            bounded = _bound(result)
+            bounded = _bound(ctx, result)
             audit.record(
                 "tool_result",
                 tool="registered_function_call",

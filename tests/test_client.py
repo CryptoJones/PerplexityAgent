@@ -200,6 +200,27 @@ async def test_finance_cache_is_bounded_opt_in(settings):
     assert route.call_count == 1
 
 
+async def test_finance_cache_evicts_oldest_entry(settings, monkeypatch):
+    settings.finance_cache_ttl_s = 30
+    async with PerplexityClient(settings) as client:
+        counter = 0
+
+        async def fake_create_response(_payload):
+            nonlocal counter
+            counter += 1
+            return _agent_response(f"resp_{counter}")
+
+        monkeypatch.setattr(client, "create_response", fake_create_response)
+        for index in range(129):
+            await client.search_finance(f"quote-{index}")
+
+        oldest = ("quote-0", (), (), "perplexity/sonar", None)
+        newest = ("quote-128", (), (), "perplexity/sonar", None)
+        assert len(client._finance_cache) == 128
+        assert oldest not in client._finance_cache
+        assert newest in client._finance_cache
+
+
 @respx.mock
 async def test_chat_includes_response_format(settings):
     captured = {}

@@ -3,9 +3,12 @@
 This document captures findings from a comprehensive code review of the PerplexityAgent
 codebase. Each finding is also tracked as a GitHub Issue. Issues are grouped by priority.
 
+**Status: resolved.** All findings and testing gaps are implemented with regression
+coverage; GitHub issues #86–#99 track the corresponding changes.
+
 ## Summary
 
-- **182 tests pass**, **89.19% coverage** (gate: 85%), **ruff clean**, **mypy strict clean**
+- **200 tests pass**, **89.94% coverage** (gate: 85%), **ruff clean**, **mypy strict clean**
 - **0 critical vulnerabilities** found
 - **3 HIGH**, **5 MEDIUM**, **5 LOW** priority items
 

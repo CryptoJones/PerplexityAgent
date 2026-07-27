@@ -122,7 +122,24 @@ def test_audit_record_truncates_oversized_payload(tmp_path):
     text = log.read_text()
     row = json.loads(text.strip().splitlines()[-1])
     assert row["event"] == "tool_result"
+    assert isinstance(row["ts"], float)
     assert row["_truncated"] is True
     assert row["original_size"] > 100_000
     assert len(row["sha256"]) == 64
     assert "x" * 1000 not in text  # the bulky field itself is gone
+
+
+def test_audit_records_have_timestamps_and_instance_file_handlers_do_not_duplicate(tmp_path):
+    log = tmp_path / "audit.log"
+    first = AuditLogger(str(log))
+    second = AuditLogger(str(log))
+
+    first.record("first", ts=0.0)
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["event"] == "first"
+    assert rows[0]["ts"] > 0.0  # caller fields cannot overwrite the forensic timestamp
+
+    second.record("second")
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [row["event"] for row in rows] == ["first", "second"]

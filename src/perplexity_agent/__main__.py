@@ -9,16 +9,83 @@ bearer token and binds to localhost by default.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import atexit
 import hmac
 import logging
 import signal
 import sys
 
+import anyio
+import mcp.types as mcp_types
 from mcp.server.fastmcp import FastMCP
+from mcp.shared.message import SessionMessage
 
 from .config import Settings, load_settings
 from .server import build_server
+
+
+async def _serve_stdio(mcp: FastMCP) -> None:
+    """Serve stdio and close the output stream when the client input reaches EOF.
+
+    MCP 1.28's stock ``stdio_server`` can wait forever on its transport pumps after
+    EOF. This small transport owns those pumps and cancels the group as soon as
+    either stdin or the server ends, so a detached client cannot leave a deaf
+    process running indefinitely.
+    """
+    read_sender, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](0)
+    write_stream, write_receiver = anyio.create_memory_object_stream[SessionMessage](0)
+    finished = anyio.Event()
+
+    async def stdin_reader() -> None:
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+        try:
+            async with read_sender:
+                while line := await reader.readline():
+                    try:
+                        message = mcp_types.JSONRPCMessage.model_validate_json(line)
+                    except Exception as exc:
+                        await read_sender.send(exc)
+                        continue
+                    await read_sender.send(SessionMessage(message))
+        finally:
+            transport.close()
+            finished.set()
+
+    async def stdout_writer() -> None:
+        async with write_receiver:
+            async for session_message in write_receiver:
+                rendered = session_message.message.model_dump_json(
+                    by_alias=True, exclude_none=True
+                )
+                sys.stdout.write(rendered + "\n")
+                sys.stdout.flush()
+                await anyio.lowlevel.checkpoint()
+
+    async def server_runner() -> None:
+        try:
+            await mcp._mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp._mcp_server.create_initialization_options(),
+            )
+        finally:
+            finished.set()
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(stdin_reader)
+        task_group.start_soon(stdout_writer)
+        task_group.start_soon(server_runner)
+        await finished.wait()
+        await write_stream.aclose()
+        task_group.cancel_scope.cancel()
+
+
+def _run_stdio(mcp: FastMCP) -> None:
+    anyio.run(_serve_stdio, mcp)
 
 
 def _run_http(mcp: FastMCP, settings: Settings) -> None:
@@ -132,7 +199,7 @@ def main() -> None:
     if args.transport == "http":
         _run_http(mcp, settings)
     else:
-        mcp.run(transport="stdio")
+        _run_stdio(mcp)
 
 
 if __name__ == "__main__":
