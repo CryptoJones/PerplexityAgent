@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-28
+
+### Security
+
+- Session-scope offloaded values and retrieval keys so one MCP client cannot
+  retrieve another session's content.
+- Add timestamps to structured audit records, prevent duplicate file handlers,
+  and truncate oversized values safely.
+- Validate incompatible Agent API function-execution options before consuming a
+  rate-limit token or emitting an audit record.
+- Validate remote input-image URLs before forwarding them upstream.
+- Update MCP to 1.28.1; the locked dependency set passes `pip-audit` with no
+  known vulnerabilities.
+
+### Changed
+
+- Return per-URL successes and errors from batch fetches instead of discarding
+  every result when one URL fails.
+- Derive the fetch User-Agent from the package version, use modern
+  `asyncio.create_task()`, and make the SQLite store safe for future
+  cross-thread use.
+- Document server-side automatic function execution controls and correct stale
+  internal documentation.
+
+### Fixed
+
+- Give `retrieve` and `server_metrics` access to the MCP request context and
+  make deep-research validation reporting defensive against incomplete results.
+- Add regression coverage for CLI transports and shutdown, Agent API streaming,
+  finance-cache and offload-store eviction, audit truncation, fallback text
+  extraction, and the end-to-end deep-research pipeline.
+
 ## [0.3.0] - 2026-07-13
 
 ### Security
@@ -163,7 +195,8 @@ validate citations) over stdio, with an optional bearer-token HTTP transport.
 Strict pydantic input validation, token-bucket rate limiting, redacting JSON
 audit log, and CI (ruff, pytest, pip-audit, gitleaks, CodeQL).
 
-[Unreleased]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.3.0...HEAD
+[Unreleased]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.3.1...HEAD
+[0.3.1]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.3.0...v0.3.1
 [0.3.0]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://codeberg.org/CryptoJones/PerplexityAgent/releases/tag/v0.1.0
