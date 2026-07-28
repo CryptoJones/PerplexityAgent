@@ -1,6 +1,7 @@
 import pytest
 from pydantic import SecretStr
 
+from perplexity_agent import __version__
 from perplexity_agent.config import Settings
 
 
@@ -28,3 +29,7 @@ def test_blank_retention_env_is_treated_as_unset(monkeypatch):
 def test_retention_rejects_non_positive():
     with pytest.raises(ValueError):
         _settings(max_tabs_per_space=0)
+
+
+def test_fetch_user_agent_tracks_package_version():
+    assert _settings().fetch_user_agent.startswith(f"PerplexityAgent-TUI/{__version__} ")

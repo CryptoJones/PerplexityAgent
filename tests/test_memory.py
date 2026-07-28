@@ -187,3 +187,14 @@ def test_agent_response_retention_is_bounded_per_session(tmp_path):
     assert s.response("resp_3", session_id="session-a") is not None
     assert s.response("resp_other", session_id="session-b") is not None
     s.close()
+
+
+def test_store_can_be_handed_to_a_worker_thread(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    s = _store(tmp_path)
+    s.add_message("user", "thread-safe handoff", now=1.0)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        history = pool.submit(s.history).result(timeout=2)
+    assert history == [{"role": "user", "content": "thread-safe handoff"}]
+    s.close()

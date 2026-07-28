@@ -69,7 +69,7 @@ class TaskManager:
         task = MonitorTask(id=self._next_id, kind=kind, target=target, interval_s=interval_s)
         self._tasks[task.id] = task
         self._next_id += 1
-        task._handle = asyncio.ensure_future(self._loop(task))
+        task._handle = asyncio.create_task(self._loop(task))
         return task
 
     def remove(self, task_id: int) -> bool:

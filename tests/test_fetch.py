@@ -5,10 +5,22 @@ import respx
 from perplexity_agent.fetch import (
     FetchError,
     PageFetcher,
+    _extract_text_fallback,
     _is_public_ip,
     _pin_to_ip,
     extract_text,
 )
+
+
+@pytest.fixture(autouse=True)
+def _run_fake_dns_inline(monkeypatch):
+    """Avoid default-executor teardown stalls around the test DNS fakes."""
+    import perplexity_agent.fetch as fetch_mod
+
+    async def inline_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(fetch_mod.asyncio, "to_thread", inline_to_thread)
 
 
 def test_pin_to_ip_rewrites_host_keeps_rest():
@@ -53,6 +65,18 @@ def test_extract_text_strips_scripts_and_gets_title():
     assert "Visible text here." in text
     assert "evil()" not in text
     assert ".x{}" not in text
+
+
+def test_fallback_text_extraction_strips_active_content():
+    html = (
+        "<title>Fallback</title><script>steal()</script>"
+        "<style>.hidden{display:none}</style><p>Readable body</p>"
+    )
+    title, text = _extract_text_fallback(html)
+    assert title == "Fallback"
+    assert "Readable body" in text
+    assert "steal()" not in text
+    assert ".hidden" not in text
 
 
 async def test_rejects_non_http_scheme(settings):

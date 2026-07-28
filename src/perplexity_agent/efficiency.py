@@ -159,22 +159,37 @@ class OffloadStore:
 
     def __init__(self, max_entries: int = 128) -> None:
         self.max_entries = max(1, max_entries)
-        self._store: OrderedDict[str, str] = OrderedDict()
+        self._store: OrderedDict[str, tuple[str, str | None]] = OrderedDict()
 
-    def stash(self, payload: str) -> str:
-        """Store ``payload`` and return its content hash (the retrieval key)."""
-        key = hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:24]
+    def stash(self, payload: str, *, owner: str | None = None) -> str:
+        """Store ``payload`` for ``owner`` and return its content hash.
+
+        ``owner`` scopes retrieval by salting the content-derived key. Identical
+        content in two sessions therefore occupies independent bounded entries,
+        and an owner set cannot grow without bound behind one popular payload.
+        """
+        key_material = payload if owner is None else f"{owner}\0{payload}"
+        key = hashlib.sha256(key_material.encode("utf-8", "replace")).hexdigest()[:24]
         if key in self._store:
+            stored_payload, stored_owner = self._store[key]
+            # A collision is fantastically unlikely at 96 bits, but never grant
+            # access to different content merely because its short hash matched.
+            if stored_payload != payload or stored_owner != owner:
+                raise ValueError("offload retrieval-key collision")
             self._store.move_to_end(key)
         else:
-            self._store[key] = payload
+            self._store[key] = (payload, owner)
             while len(self._store) > self.max_entries:
                 self._store.popitem(last=False)  # evict oldest
         return key
 
-    def retrieve(self, key: str) -> str | None:
-        """Return the stashed payload for ``key``, or ``None`` if absent/evicted."""
-        return self._store.get(key)
+    def retrieve(self, key: str, *, owner: str | None = None) -> str | None:
+        """Return ``owner``'s payload, or ``None`` if absent, evicted, or foreign."""
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        payload, stored_owner = entry
+        return payload if owner == stored_owner else None
 
 
 def bound_result(
@@ -182,6 +197,7 @@ def bound_result(
     *,
     max_chars: int = DEFAULT_MAX_CHARS,
     store: OffloadStore | None = None,
+    owner: str | None = None,
 ) -> Any:
     """Bound any tool result to ``max_chars``.
 
@@ -194,7 +210,11 @@ def bound_result(
     if isinstance(result, str):
         bounded, truncated = bound_text(result, max_chars)
         if truncated and store is not None:
-            return {"truncated": True, "content": bounded, "retrieve_key": store.stash(result)}
+            return {
+                "truncated": True,
+                "content": bounded,
+                "retrieve_key": store.stash(result, owner=owner),
+            }
         return bounded
 
     serialized = json.dumps(result, default=str)
@@ -207,5 +227,5 @@ def bound_result(
         "content": bounded,
     }
     if store is not None:
-        envelope["retrieve_key"] = store.stash(serialized)
+        envelope["retrieve_key"] = store.stash(serialized, owner=owner)
     return envelope

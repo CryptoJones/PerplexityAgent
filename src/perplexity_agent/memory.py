@@ -111,7 +111,10 @@ class Store:
         on_disk = str(self._path) != ":memory:"
         if on_disk:
             self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._path))
+        # Permit a Store to be handed to a worker thread without sqlite3's
+        # creator-thread ProgrammingError. Public operations remain synchronous,
+        # so callers still serialize access to this single connection.
+        self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()

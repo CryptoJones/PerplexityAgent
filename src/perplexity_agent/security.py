@@ -10,6 +10,7 @@ Implements several NSA MCP recommendations:
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import re
@@ -20,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger("perplexity_agent.audit")
+_LOGGER_LOCK = threading.Lock()
+_LOGGER_IDS = itertools.count()
 
 # An audit line larger than this (bytes) is replaced with a small {_truncated,
 # original_size, sha256} stub so a hostile or buggy field can't flood the log.
@@ -132,29 +135,45 @@ class AuditLogger:
     """Structured JSON audit log to stderr and (optionally) a file."""
 
     def __init__(self, file_path: str | None = None) -> None:
-        self._logger = logger
-        if not self._logger.handlers:
-            handler = logging.StreamHandler(sys.stderr)
-            handler.setFormatter(logging.Formatter("%(message)s"))
-            self._logger.addHandler(handler)
+        # One shared stderr sink keeps audit events centrally capturable, while a
+        # per-instance child logger owns its optional file handler. Multiple
+        # AuditLogger instances therefore cannot duplicate or cross-write each
+        # other's files through handlers accumulated on the module-level logger.
+        with _LOGGER_LOCK:
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+            if not any(
+                getattr(handler, "_perplexity_audit_stderr", False)
+                for handler in logger.handlers
+            ):
+                handler = logging.StreamHandler(sys.stderr)
+                handler.setFormatter(logging.Formatter("%(message)s"))
+                handler._perplexity_audit_stderr = True  # type: ignore[attr-defined]
+                logger.addHandler(handler)
+            self._logger = logger.getChild(f"instance-{next(_LOGGER_IDS)}")
             self._logger.setLevel(logging.INFO)
-            self._logger.propagate = False
-        if file_path:
-            fh = logging.FileHandler(file_path)
-            fh.setFormatter(logging.Formatter("%(message)s"))
-            self._logger.addHandler(fh)
+            self._logger.propagate = True
+            if file_path:
+                fh = logging.FileHandler(file_path)
+                fh.setFormatter(logging.Formatter("%(message)s"))
+                self._logger.addHandler(fh)
 
     def record(self, event: str, **fields: object) -> None:
         """Emit one audit event. Fields pass through secret redaction; an
         oversized line is replaced with a small ``{_truncated, original_size,
         sha256}`` stub so a hostile or buggy field can't flood the log."""
-        payload = {"event": event, **{k: redact(v) for k, v in fields.items()}}
+        timestamp = time.time()
+        payload = {k: redact(v) for k, v in fields.items()}
+        # Reserved forensic fields are assigned last so caller data cannot
+        # overwrite either the event name or its timestamp.
+        payload.update({"event": event, "ts": timestamp})
         line = json.dumps(payload, default=str, sort_keys=True)
         raw = line.encode("utf-8", "replace")
         if len(raw) > _MAX_AUDIT_BYTES:
             line = json.dumps(
                 {
                     "event": event,
+                    "ts": timestamp,
                     "_truncated": True,
                     "original_size": len(raw),
                     "sha256": hashlib.sha256(raw).hexdigest(),
