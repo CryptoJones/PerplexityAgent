@@ -151,6 +151,71 @@ def test_stdio_server_exits_on_client_eof(tmp_path):
     assert rc == 0
 
 
+def test_stdio_survives_a_request_larger_than_64k(tmp_path):
+    """Robustness regression: a JSON-RPC line over asyncio's default 64 KiB
+    StreamReader limit must not crash the transport.
+
+    The stdin reader used a default-limit ``asyncio.StreamReader``; a >64K line
+    raised ``LimitOverrunError`` and tore down the whole task group, killing the
+    server on a single large (legitimate or hostile) request. The reader now uses
+    a 16 MiB limit, so a large-but-reasonable request is served and the process
+    stays alive to answer the next one.
+    """
+    import json
+    import os
+    import subprocess
+
+    env = {
+        **os.environ,
+        "PERPLEXITY_API_KEY": "pplx-dummy-big-line",
+        "PERPLEXITY_STORE_PATH": str(tmp_path / "store.db"),
+    }
+    proc = subprocess.Popen(  # noqa: S603 - fixed argv, test-controlled
+        [sys.executable, "-m", "perplexity_agent"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        cwd=str(tmp_path),
+    )
+
+    def send(obj):
+        assert proc.stdin is not None
+        proc.stdin.write((json.dumps(obj) + "\n").encode())
+        proc.stdin.flush()
+
+    try:
+        # server_metrics ignores the oversized extra field; the point is the
+        # ~100 KB line (well over 64 KiB) does not crash the reader.
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "server_metrics",
+                    "arguments": {"__unexpected__": "x" * 100_000},
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                    },
+                },
+            }
+        )
+        assert proc.stdout is not None
+        line = proc.stdout.readline()  # a reply, not a dead pipe
+        assert line, "server produced no reply to an over-64K request (transport crashed)"
+        reply = json.loads(line)
+        assert reply.get("id") == 1
+        assert "result" in reply and "error" not in reply
+        # And it is still alive for the next request.
+        proc.stdin.close()
+        assert proc.wait(timeout=20) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
 def test_run_tui_reports_missing_extra(monkeypatch, fake_settings):
     # Simulate the `tui` extra not being installed: a None entry in sys.modules
     # makes `from .tui import run_tui` raise ImportError without touching the real

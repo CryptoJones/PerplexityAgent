@@ -2,13 +2,20 @@
 # Run from the repo root with the project venv present:
 #   /path/to/mcp-conformance/.venv/bin/mcp-conformance run
 #
-# All three tools (perplexity_search, sonar_ask, deep_research) call the paid
-# Perplexity API, so there are NO behavioural probes — invoking them would cost
-# money and need a real key. The protocol/schema contracts still run in full;
-# the behavioural contracts skip by design. A dummy key lets the server start
+# The research tools (perplexity_search, sonar_ask, deep_research, responses_*)
+# call the paid Perplexity API, so they are NOT probed — invoking them would cost
+# money and need a real key. The behavioural probe is restricted to
+# server_metrics: a read-only tool that reports this process's request/latency
+# counters and never touches the API, so the suite runs offline with a dummy key
 # (the key is a SecretStr validated only for presence at startup).
 command = [".venv/bin/perplexity-agent"]
 env = { PERPLEXITY_API_KEY = "test-dummy-key" }
 
+[[probe]]
+tool = "server_metrics"
+
 [expect]
 max_output_chars = 200000
+# PerplexityAgent tags fetched web content as untrusted rather than flagging
+# injection in its own tool inputs, and the flagging tools call the API, so
+# expect.injection is intentionally omitted.

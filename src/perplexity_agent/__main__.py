@@ -18,14 +18,21 @@ import sys
 
 import anyio
 import mcp.types as mcp_types
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.shared.message import SessionMessage
 
 from .config import Settings, load_settings
 from .server import build_server
 
+# Max bytes for a single JSON-RPC line on stdin. asyncio.StreamReader defaults to
+# a 64 KiB line limit and raises on anything larger, which would crash the whole
+# transport task group on an over-64K request — a legitimately large tool call, or
+# a hostile oversized one. Raise it to a generous-but-bounded cap so real traffic
+# passes and a runaway line still can't exhaust memory.
+_MAX_STDIN_LINE = 16 * 1024 * 1024  # 16 MiB
 
-async def _serve_stdio(mcp: FastMCP) -> None:
+
+async def _serve_stdio(mcp: MCPServer) -> None:
     """Serve stdio and close the output stream when the client input reaches EOF.
 
     MCP 1.28's stock ``stdio_server`` can wait forever on its transport pumps after
@@ -39,14 +46,29 @@ async def _serve_stdio(mcp: FastMCP) -> None:
 
     async def stdin_reader() -> None:
         loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
+        reader = asyncio.StreamReader(limit=_MAX_STDIN_LINE)
         protocol = asyncio.StreamReaderProtocol(reader)
         transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
         try:
             async with read_sender:
-                while line := await reader.readline():
+                while True:
                     try:
-                        message = mcp_types.JSONRPCMessage.model_validate_json(line)
+                        line = await reader.readline()
+                    except ValueError as exc:
+                        # A single line exceeded _MAX_STDIN_LINE. The overrun data
+                        # stays buffered and would re-raise on every retry, so we
+                        # surface one protocol error and stop reading — a clean end
+                        # to the transport, never an unhandled crash of the whole
+                        # task group (the previous behaviour). 16 MiB is far above
+                        # any legitimate JSON-RPC line, so this is the hostile case.
+                        await read_sender.send(exc)
+                        break
+                    if not line:
+                        break
+                    try:
+                        message = mcp_types.jsonrpc_message_adapter.validate_json(
+                            line, by_name=False
+                        )
                     except Exception as exc:
                         await read_sender.send(exc)
                         continue
@@ -59,7 +81,7 @@ async def _serve_stdio(mcp: FastMCP) -> None:
         async with write_receiver:
             async for session_message in write_receiver:
                 rendered = session_message.message.model_dump_json(
-                    by_alias=True, exclude_none=True
+                    by_alias=True, exclude_unset=True
                 )
                 sys.stdout.write(rendered + "\n")
                 sys.stdout.flush()
@@ -67,10 +89,10 @@ async def _serve_stdio(mcp: FastMCP) -> None:
 
     async def server_runner() -> None:
         try:
-            await mcp._mcp_server.run(
+            await mcp._lowlevel_server.run(
                 read_stream,
                 write_stream,
-                mcp._mcp_server.create_initialization_options(),
+                mcp._lowlevel_server.create_initialization_options(),
             )
         finally:
             finished.set()
@@ -84,11 +106,11 @@ async def _serve_stdio(mcp: FastMCP) -> None:
         task_group.cancel_scope.cancel()
 
 
-def _run_stdio(mcp: FastMCP) -> None:
+def _run_stdio(mcp: MCPServer) -> None:
     anyio.run(_serve_stdio, mcp)
 
 
-def _run_http(mcp: FastMCP, settings: Settings) -> None:
+def _run_http(mcp: MCPServer, settings: Settings) -> None:
     """Run the streamable-HTTP transport behind mandatory bearer-token auth."""
     if not settings.http_auth_token:
         sys.exit(

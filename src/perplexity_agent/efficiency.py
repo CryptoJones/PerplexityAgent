@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -159,37 +160,28 @@ class OffloadStore:
 
     def __init__(self, max_entries: int = 128) -> None:
         self.max_entries = max(1, max_entries)
-        self._store: OrderedDict[str, tuple[str, str | None]] = OrderedDict()
+        self._store: OrderedDict[str, str] = OrderedDict()
 
-    def stash(self, payload: str, *, owner: str | None = None) -> str:
-        """Store ``payload`` for ``owner`` and return its content hash.
+    def stash(self, payload: str) -> str:
+        """Store ``payload`` and return an unguessable retrieval key.
 
-        ``owner`` scopes retrieval by salting the content-derived key. Identical
-        content in two sessions therefore occupies independent bounded entries,
-        and an owner set cannot grow without bound behind one popular payload.
+        The key is a fresh random token, not a content hash, so it is a genuine
+        server-minted capability: possession of the key IS the authorization to
+        retrieve. MCP revision 2026-07-28 removed protocol sessions, so retrieval
+        can no longer be scoped to a session identity — the spec's replacement is
+        exactly this, an opaque handle passed back as an ordinary tool argument.
+        A random key also means an attacker cannot fabricate one by guessing the
+        content, which a content-hash key allowed.
         """
-        key_material = payload if owner is None else f"{owner}\0{payload}"
-        key = hashlib.sha256(key_material.encode("utf-8", "replace")).hexdigest()[:24]
-        if key in self._store:
-            stored_payload, stored_owner = self._store[key]
-            # A collision is fantastically unlikely at 96 bits, but never grant
-            # access to different content merely because its short hash matched.
-            if stored_payload != payload or stored_owner != owner:
-                raise ValueError("offload retrieval-key collision")
-            self._store.move_to_end(key)
-        else:
-            self._store[key] = (payload, owner)
-            while len(self._store) > self.max_entries:
-                self._store.popitem(last=False)  # evict oldest
+        key = secrets.token_hex(12)  # 96 bits, same width as the old short hash
+        self._store[key] = payload
+        while len(self._store) > self.max_entries:
+            self._store.popitem(last=False)  # evict oldest
         return key
 
-    def retrieve(self, key: str, *, owner: str | None = None) -> str | None:
-        """Return ``owner``'s payload, or ``None`` if absent, evicted, or foreign."""
-        entry = self._store.get(key)
-        if entry is None:
-            return None
-        payload, stored_owner = entry
-        return payload if owner == stored_owner else None
+    def retrieve(self, key: str) -> str | None:
+        """Return the payload for ``key``, or ``None`` if absent or evicted."""
+        return self._store.get(key)
 
 
 def bound_result(
@@ -197,7 +189,6 @@ def bound_result(
     *,
     max_chars: int = DEFAULT_MAX_CHARS,
     store: OffloadStore | None = None,
-    owner: str | None = None,
 ) -> Any:
     """Bound any tool result to ``max_chars``.
 
@@ -213,7 +204,7 @@ def bound_result(
             return {
                 "truncated": True,
                 "content": bounded,
-                "retrieve_key": store.stash(result, owner=owner),
+                "retrieve_key": store.stash(result),
             }
         return bounded
 
@@ -227,5 +218,5 @@ def bound_result(
         "content": bounded,
     }
     if store is not None:
-        envelope["retrieve_key"] = store.stash(serialized, owner=owner)
+        envelope["retrieve_key"] = store.stash(serialized)
     return envelope

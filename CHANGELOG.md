@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Adopt MCP revision `2026-07-28` (the stateless revision) via the `mcp` 2.x
+  SDK** (`mcp>=1.28.1,<2.0.0` → `mcp>=2.0.0,<3.0`). `FastMCP` → `MCPServer`;
+  `Context` now imports from `mcp.server.mcpserver`. Every tool's behaviour is
+  unchanged and a v2 server still serves 2025-era clients from the same process.
+  Transport constructor args (`host`/`port`) moved to the run call, matching the
+  SDK. Verified against `mcp-conformance` 0.2.0 (17 contracts, 1 injection skip).
+- **Offloaded-result and stored-response access is now authorized by possession
+  of the handle, not by session identity.** The 2026-07-28 revision removed
+  protocol sessions, so the previous `id(ctx.session)` scoping no longer works
+  (a fresh session object exists per request). Per the spec, cross-call state is
+  addressed by server-minted handles passed as tool arguments: the `retrieve_key`
+  is now an unguessable random capability token (was a content hash), and holding
+  a `retrieve_key` / `response_id` is the authorization to fetch it.
+
+### Fixed
+
+- **The stdio transport crashed on any JSON-RPC request larger than 64 KiB.** The
+  stdin reader used a default-limit `asyncio.StreamReader`; an over-64K line
+  raised `LimitOverrunError` and tore down the whole transport task group, taking
+  the server down on a single large request (legitimate or hostile). The reader
+  now uses a 16 MiB limit and turns a still-oversized line into a clean protocol
+  error instead of an unhandled crash. Regression-tested over a real subprocess.
+- Custom stdio transport now parses lines through the SDK's
+  `jsonrpc_message_adapter` (in 2.x `JSONRPCMessage` is a plain union alias with
+  no `model_validate_json`) and serializes replies with `exclude_unset=True`,
+  which keeps the 2026-07-28 envelope fields (`resultType`, `ttlMs`,
+  `cacheScope`) on the wire.
+
 ## [0.3.1] - 2026-07-28
 
 ### Security
