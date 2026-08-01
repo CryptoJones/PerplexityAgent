@@ -1,4 +1,4 @@
-"""FastMCP server exposing the Perplexity tools.
+"""MCPServer server exposing the Perplexity tools.
 
 Tools include Search/Sonar, the Responses-compatible Agent API, specialized
 finance/people/URL search, deep research, retrieval, and metrics.
@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
 from .client import FunctionHandler, PerplexityClient, PerplexityError
 from .config import Settings, load_settings
@@ -50,8 +50,8 @@ def build_server(
     settings: Settings | None = None,
     *,
     function_registry: Mapping[str, FunctionHandler] | None = None,
-) -> tuple[FastMCP, Settings]:
-    """Construct the FastMCP server and return it alongside the loaded settings."""
+) -> tuple[MCPServer, Settings]:
+    """Construct the MCPServer server and return it alongside the loaded settings."""
     settings = settings or load_settings()
     audit = AuditLogger(settings.audit_log_path)
     bucket = TokenBucket(settings.rate_per_minute, settings.rate_burst)
@@ -61,7 +61,7 @@ def build_server(
     metrics = MetricsCollector()
 
     @asynccontextmanager
-    async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    async def lifespan(_server: MCPServer) -> AsyncIterator[dict[str, Any]]:
         client = PerplexityClient(settings)
         fetcher = PageFetcher(settings)
         response_store = Store.from_settings(settings)
@@ -72,7 +72,7 @@ def build_server(
             await fetcher.aclose()
             await client.aclose()
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "perplexity-agent",
         instructions=(
             "Tools for web research via the Perplexity API. Use perplexity_search "
@@ -81,9 +81,10 @@ def build_server(
             "responses_create for the Responses-compatible Agent API."
         ),
         lifespan=lifespan,
-        host=settings.http_host,
-        port=settings.http_port,
     )
+    # mcp 2.x moved transport args (host/port) off the constructor; the HTTP
+    # transport in __main__ already binds them on uvicorn.run(), so nothing here
+    # needs them.
 
     def _client(ctx: Context) -> PerplexityClient:
         client: PerplexityClient = ctx.request_context.lifespan_context["client"]
@@ -97,10 +98,13 @@ def build_server(
         response_store: Store = ctx.request_context.lifespan_context["response_store"]
         return response_store
 
-    def _session_id(ctx: Context) -> str:
-        # The transport session object is unique per connection. ``client_id`` is
-        # client-declared metadata and can be reused or spoofed across sessions.
-        return f"session:{id(ctx.session)}"
+    # MCP revision 2026-07-28 removed protocol sessions: there is no longer a
+    # stable per-connection identity to scope stored state by. Per the spec,
+    # cross-call state is addressed by server-minted handles passed as ordinary
+    # tool arguments — the offload ``retrieve_key`` (a random capability token)
+    # and the API ``response_id``. Possession of the handle IS the authorization,
+    # so both stores share this single namespace instead of a session bucket.
+    _STORE_NAMESPACE = "shared"
 
     def _guard(tool: str, params: dict[str, Any]) -> str:
         """Rate-limit and audit the start of a tool call (params redacted).
@@ -135,7 +139,7 @@ def build_server(
             fields["usage"] = usage
         return fields
 
-    def _bound(ctx: Context, result: dict[str, Any]) -> dict[str, Any]:
+    def _bound(result: dict[str, Any]) -> dict[str, Any]:
         """Bound a result to the char budget, offloading the full value if over.
 
         For a dict input ``bound_result`` returns either the dict unchanged or a
@@ -147,7 +151,6 @@ def build_server(
                 result,
                 max_chars=settings.max_tool_output_chars,
                 store=offload_store,
-                owner=_session_id(ctx),
             ),
         )
 
@@ -204,7 +207,7 @@ def build_server(
                 exclude_none=True,
             ),
         )
-        bounded = _bound(ctx, result)
+        bounded = _bound(result)
         audit.record(
             "tool_result",
             tool="perplexity_search",
@@ -261,11 +264,6 @@ def build_server(
             }
         )
         payload = args.model_dump(mode="json", exclude_none=True)
-        session_id = _session_id(ctx)
-        if args.previous_response_id:
-            owner = _response_store(ctx).response_owner(args.previous_response_id)
-            if owner is not None and owner != session_id:
-                raise PerplexityError("previous_response_id belongs to another MCP session")
         if not 1 <= max_function_rounds <= 10:
             raise ValueError("max_function_rounds must be between 1 and 10")
         if args.stream and auto_execute_functions:
@@ -314,9 +312,9 @@ def build_server(
         persisted = result.get("response") if result.get("object") == "response.stream" else result
         if args.store is not False and isinstance(persisted, dict) and persisted.get("id"):
             _response_store(ctx).save_response(
-                str(persisted["id"]), persisted, session_id=session_id, now=time.time()
+                str(persisted["id"]), persisted, session_id=_STORE_NAMESPACE, now=time.time()
             )
-        bounded = _bound(ctx, result)
+        bounded = _bound(result)
         audit.record(
             "tool_result",
             tool="responses_create",
@@ -329,20 +327,18 @@ def build_server(
     async def responses_retrieve(ctx: Context, response_id: str) -> dict[str, Any]:
         """Retrieve a stored Agent API response snapshot by its ``resp_`` ID."""
         args = ResponseRetrieveInput(response_id=response_id)
-        session_id = _session_id(ctx)
         response_store = _response_store(ctx)
-        cached = response_store.response(args.response_id, session_id=session_id)
-        owner = response_store.response_owner(args.response_id)
-        if cached is None and owner is not None and owner != session_id:
-            raise PerplexityError("response_id belongs to another MCP session")
+        # Possession of the response_id is the authorization; there is no session
+        # to scope against under the 2026-07-28 revision.
+        cached = response_store.response(args.response_id, session_id=_STORE_NAMESPACE)
         call_id = _guard("responses_retrieve", {"response_id": args.response_id})
         started = time.monotonic()
         result = cached or await _client(ctx).retrieve_response(args.response_id)
         if cached is None:
             response_store.save_response(
-                args.response_id, result, session_id=session_id, now=time.time()
+                args.response_id, result, session_id=_STORE_NAMESPACE, now=time.time()
             )
-        bounded = _bound(ctx, result)
+        bounded = _bound(result)
         audit.record(
             "tool_result",
             tool="responses_retrieve",
@@ -387,7 +383,7 @@ def build_server(
             model=validated.model or args.model,
             max_output_tokens=validated.max_output_tokens,
         )
-        bounded = _bound(ctx, result)
+        bounded = _bound(result)
         audit.record(
             "tool_result",
             tool="finance_search",
@@ -414,7 +410,7 @@ def build_server(
         result = await _client(ctx).people_search(
             args.query, args.max_results, args.max_tokens_per_page
         )
-        bounded = _bound(ctx, result)
+        bounded = _bound(result)
         audit.record(
             "tool_result",
             tool="people_search",
@@ -461,7 +457,7 @@ def build_server(
                 }
             )
         result = {"contents": contents}
-        bounded = _bound(ctx, result)
+        bounded = _bound(result)
         audit.record(
             "tool_result",
             tool="fetch_url",
@@ -518,7 +514,7 @@ def build_server(
             result = await _client(ctx).chat(
                 messages, model=args.model, response_format=legacy_format
             )
-        bounded = _bound(ctx, result)
+        bounded = _bound(result)
         audit.record(
             "tool_result",
             tool="sonar_ask",
@@ -557,7 +553,7 @@ def build_server(
             max_results_per_subquestion=args.max_results_per_subquestion,
             use_model_decomposition=args.use_model_decomposition,
         )
-        bounded = _bound(ctx, result)
+        bounded = _bound(result)
         validation_report = result.get("validation_report")
         validation_passed = (
             bool(validation_report.get("passed", False))
@@ -583,7 +579,7 @@ def build_server(
         args = RetrieveInput(key=key)
         call_id = _guard("retrieve", {"key": args.key})
         started = time.monotonic()
-        payload = offload_store.retrieve(args.key, owner=_session_id(ctx))
+        payload = offload_store.retrieve(args.key)
         result: dict[str, Any] = (
             {"error": f"no offloaded value for key {args.key!r} (expired or unknown)"}
             if payload is None
@@ -625,7 +621,7 @@ def build_server(
                 value = await value
             safe_value = json.loads(json.dumps(value, default=str))
             result = {"name": args.name, "output": safe_value}
-            bounded = _bound(ctx, result)
+            bounded = _bound(result)
             audit.record(
                 "tool_result",
                 tool="registered_function_call",

@@ -68,14 +68,19 @@ def test_offload_store_roundtrip_and_eviction():
     assert store.retrieve(k2) == "two"
 
 
-def test_offload_store_scopes_identical_content_to_authorized_owners():
+def test_offload_store_keys_are_unguessable_capabilities():
+    # MCP 2026-07-28 removed sessions: retrieval is authorized by possession of an
+    # unguessable server-minted key, not by a session owner. Each stash mints a
+    # fresh key (so identical content still yields distinct handles), the key
+    # retrieves its payload, and a key never handed out cannot be guessed.
     store = efficiency.OffloadStore()
-    key_a = store.stash("secret payload", owner="session-a")
-    key_b = store.stash("secret payload", owner="session-b")
+    key_a = store.stash("secret payload")
+    key_b = store.stash("secret payload")
     assert key_a != key_b
-    assert store.retrieve(key_a, owner="session-a") == "secret payload"
-    assert store.retrieve(key_a, owner="session-b") is None
-    assert store.retrieve(key_b, owner="session-b") == "secret payload"
+    assert len(key_a) == 24 and all(c in "0123456789abcdef" for c in key_a)
+    assert store.retrieve(key_a) == "secret payload"
+    assert store.retrieve(key_b) == "secret payload"
+    assert store.retrieve("0" * 24) is None
 
 
 def test_bound_result_passthrough_when_small():

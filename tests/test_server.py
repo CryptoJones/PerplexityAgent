@@ -11,7 +11,7 @@ import json
 import httpx
 import pytest
 import respx
-from mcp.shared.memory import create_connected_server_and_client_session as connect
+from mcp import Client
 from pydantic import SecretStr
 
 from perplexity_agent.config import Settings
@@ -46,7 +46,7 @@ def _agent_response(response_id="resp_1", output=None):
 
 async def test_list_tools_exposes_all():
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         tools = sorted(t.name for t in (await client.list_tools()).tools)
     assert tools == [
         "deep_research",
@@ -64,7 +64,7 @@ async def test_list_tools_exposes_all():
 
 async def test_responses_create_description_documents_server_side_controls():
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
     description = tools["responses_create"].description or ""
     assert "auto_execute_functions" in description
@@ -73,7 +73,7 @@ async def test_responses_create_description_documents_server_side_controls():
 
 async def test_server_metrics_tool_reports_counters():
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         out = json.loads(_text(await client.call_tool("server_metrics", {})))
     assert "total_calls" in out
     assert "latency_ms" in out
@@ -94,7 +94,7 @@ async def test_large_result_offloaded_and_retrievable():
         store_path=":memory:",
     )
     mcp, _ = build_server(settings)
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool("perplexity_search", {"query": "q"})
         payload = json.loads(_text(result))
         assert payload["truncated"] is True
@@ -104,7 +104,13 @@ async def test_large_result_offloaded_and_retrievable():
 
 
 @respx.mock
-async def test_offloaded_result_cannot_be_retrieved_from_another_session():
+async def test_offload_retrieval_is_authorized_by_possession_of_the_key():
+    # MCP 2026-07-28 removed protocol sessions, so retrieval can no longer be
+    # scoped to a session identity. The retrieve_key is instead an unguessable
+    # server-minted capability: anyone HOLDING the key can retrieve (that is how
+    # the same key works across independent connections), and the isolation comes
+    # from the key being unguessable — a caller who never received it cannot
+    # fabricate it.
     big = {"results": [{"url": f"https://a.com/{i}", "blob": "x" * 100} for i in range(50)]}
     respx.post("https://api.perplexity.ai/search").mock(
         return_value=httpx.Response(200, json=big)
@@ -118,19 +124,24 @@ async def test_offloaded_result_cannot_be_retrieved_from_another_session():
         store_path=":memory:",
     )
     mcp, _ = build_server(settings)
-    async with connect(mcp._mcp_server) as owner:
+    async with Client(mcp) as owner:
         result = await owner.call_tool("perplexity_search", {"query": "q"})
         key = json.loads(_text(result))["retrieve_key"]
-        async with connect(mcp._mcp_server) as stranger:
-            foreign = json.loads(_text(await stranger.call_tool("retrieve", {"key": key})))
-        restored = json.loads(_text(await owner.call_tool("retrieve", {"key": key})))
-    assert "error" in foreign
+        # A separate connection holding the key CAN retrieve (possession = auth).
+        async with Client(mcp) as holder:
+            restored = json.loads(_text(await holder.call_tool("retrieve", {"key": key})))
+        # A caller who never received the key cannot guess a valid one.
+        async with Client(mcp) as stranger:
+            forged = json.loads(
+                _text(await stranger.call_tool("retrieve", {"key": "0" * 24}))
+            )
     assert "https://a.com/0" in restored["content"]
+    assert "error" in forged
 
 
 async def test_retrieve_unknown_key_errors_cleanly():
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool("retrieve", {"key": "deadbeefdeadbeef"})
     assert "error" in json.loads(_text(result))
 
@@ -141,7 +152,7 @@ async def test_search_tool_roundtrip():
         return_value=httpx.Response(200, json={"results": [{"url": "https://a.com"}]})
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool("perplexity_search", {"query": "q", "max_results": 3})
     assert "https://a.com" in _text(result)
 
@@ -152,7 +163,7 @@ async def test_search_tool_forwards_advanced_filters():
         return_value=httpx.Response(200, json={"results": []})
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         await client.call_tool(
             "perplexity_search",
             {
@@ -175,7 +186,7 @@ async def test_responses_create_roundtrip_with_state_and_multimodal_input():
         )
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool(
             "responses_create",
             {
@@ -225,7 +236,7 @@ async def test_responses_create_streaming_branch_collects_and_persists_completed
         )
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         streamed = json.loads(
             _text(
                 await client.call_tool(
@@ -249,7 +260,7 @@ async def test_responses_retrieve_roundtrip():
         return_value=httpx.Response(200, json=_agent_response("resp_2"))
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool("responses_retrieve", {"response_id": "resp_2"})
     assert route.called
     assert json.loads(_text(result))["id"] == "resp_2"
@@ -261,7 +272,7 @@ async def test_finance_search_enables_builtin_tool_and_hints():
         return_value=httpx.Response(200, json=_agent_response("resp_fin"))
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         await client.call_tool(
             "finance_search",
             {"query": "current valuation", "categories": ["quote"], "tickers": ["NVDA"]},
@@ -278,7 +289,7 @@ async def test_people_search_uses_people_index():
         return_value=httpx.Response(200, json={"results": [{"title": "Ada"}]})
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool("people_search", {"query": "Ada Lovelace"})
     assert "Ada" in _text(result)
     assert json.loads(route.calls.last.request.content)["search_type"] == "people"
@@ -301,7 +312,7 @@ async def test_fetch_url_tool_uses_hardened_fetcher(monkeypatch):
         return_value=httpx.Response(200, html="<title>Article</title><p>safe text</p>")
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool("fetch_url", {"url": "https://example.com/article"})
     payload = json.loads(_text(result))
     assert payload["contents"][0]["title"] == "Article"
@@ -330,7 +341,7 @@ async def test_fetch_url_tool_accepts_bounded_url_list(monkeypatch):
         return_value=httpx.Response(200, html="<title>B</title><p>second</p>")
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool(
             "fetch_url",
             {"urls": ["https://example.com/a", "https://example.com/b"], "max_urls": 2},
@@ -363,7 +374,7 @@ async def test_fetch_url_returns_partial_results_when_one_url_fails(monkeypatch)
         )
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool(
             "fetch_url",
             {
@@ -396,7 +407,7 @@ async def test_responses_create_auto_executes_registered_functions():
     mcp, _ = build_server(
         _settings(), function_registry={"multiply": lambda args: args["a"] * args["b"]}
     )
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         tools = {tool.name for tool in (await client.list_tools()).tools}
         assert "registered_function_call" in tools
         direct = await client.call_tool(
@@ -429,7 +440,7 @@ async def test_sonar_ask_tool_roundtrip():
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "grounded"}}]})
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool(
             "sonar_ask", {"question": "why?", "model": "sonar-pro", "system_prompt": "cite"}
         )
@@ -442,7 +453,7 @@ async def test_sonar_ask_routes_provider_models_to_agent_api():
         return_value=httpx.Response(200, json=_agent_response("resp_agent"))
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool(
             "sonar_ask",
             {
@@ -474,7 +485,7 @@ async def test_deep_research_tool_roundtrip():
         return_value=httpx.Response(200, json=chat_json)
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool(
             "deep_research", {"question": "is x true?", "num_subquestions": 2}
         )
@@ -520,7 +531,7 @@ async def test_deep_research_full_pipeline_with_model_decomposition():
         ]
     )
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool(
             "deep_research",
             {
@@ -544,9 +555,9 @@ async def test_deep_research_audit_defensively_handles_missing_validation_report
 
     monkeypatch.setattr(server_mod, "_deep_research", incomplete_result)
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool("deep_research", {"question": "q"})
-    assert not result.isError
+    assert not result.is_error
     assert json.loads(_text(result))["report"]["answer"] == "future shape"
 
 
@@ -576,7 +587,7 @@ async def test_audit_correlates_call_and_result_with_latency():
             )
         )
         mcp, _ = build_server(_settings())
-        async with connect(mcp._mcp_server) as client:
+        async with Client(mcp) as client:
             await client.call_tool("sonar_ask", {"question": "why?"})
     finally:
         audit_logger.removeHandler(handler)
@@ -593,9 +604,9 @@ async def test_audit_correlates_call_and_result_with_latency():
 async def test_invalid_params_rejected():
     # Empty query violates the SearchInput min_length bound.
     mcp, _ = build_server(_settings())
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         result = await client.call_tool("perplexity_search", {"query": ""})
-    assert result.isError
+    assert result.is_error
 
 
 async def test_responses_create_server_validation_happens_before_rate_limit_guard():
@@ -607,7 +618,7 @@ async def test_responses_create_server_validation_happens_before_rate_limit_guar
         store_path=":memory:",
     )
     mcp, _ = build_server(settings, function_registry={"noop": lambda _args: None})
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         invalid = await client.call_tool(
             "responses_create",
             {
@@ -617,8 +628,8 @@ async def test_responses_create_server_validation_happens_before_rate_limit_guar
             },
         )
         metrics = await client.call_tool("server_metrics", {})
-    assert invalid.isError
-    assert not metrics.isError  # invalid request did not spend the only token
+    assert invalid.is_error
+    assert not metrics.is_error  # invalid request did not spend the only token
 
 
 async def test_missing_function_registry_is_rejected_before_rate_limit_guard():
@@ -630,14 +641,14 @@ async def test_missing_function_registry_is_rejected_before_rate_limit_guard():
         store_path=":memory:",
     )
     mcp, _ = build_server(settings)
-    async with connect(mcp._mcp_server) as client:
+    async with Client(mcp) as client:
         invalid = await client.call_tool(
             "responses_create",
             {"input": "q", "auto_execute_functions": True},
         )
         metrics = await client.call_tool("server_metrics", {})
-    assert invalid.isError
-    assert not metrics.isError
+    assert invalid.is_error
+    assert not metrics.is_error
 
 
 async def test_rate_limit_enforced():
@@ -653,11 +664,11 @@ async def test_rate_limit_enforced():
         respx.post("https://api.perplexity.ai/search").mock(
             return_value=httpx.Response(200, json={"results": []})
         )
-        async with connect(mcp._mcp_server) as client:
+        async with Client(mcp) as client:
             first = await client.call_tool("perplexity_search", {"query": "q"})
             second = await client.call_tool("perplexity_search", {"query": "q"})
-    assert not first.isError
-    assert second.isError  # burst of 1 exhausted -> rate limited
+    assert not first.is_error
+    assert second.is_error  # burst of 1 exhausted -> rate limited
 
 
 if __name__ == "__main__":  # pragma: no cover
