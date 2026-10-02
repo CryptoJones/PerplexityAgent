@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Documented MiniMax Code as a supported client.** The README gained a
+  "Register with MiniMax Code" section covering the `mavis mcp create` stdio
+  registration, and MiniMax Code was added to the supported-client list in the
+  README intro and the `pyproject.toml` description. The section also records that
+  `PERPLEXITY_API_KEY` does **not** need to be copied into the client config:
+  `uv --directory` runs the server with the repo as its working directory, so the
+  key is still read from the gitignored `.env` exactly once. No code or tool-surface
+  change — the server already spoke the 2026-07-28 revision any conforming client
+  can drive.
 - **Adopt MCP revision `2026-07-28` (the stateless revision) via the `mcp` 2.x
   SDK** (`mcp>=1.28.1,<2.0.0` → `mcp>=2.0.0,<3.0`). `FastMCP` → `MCPServer`;
   `Context` now imports from `mcp.server.mcpserver`. Every tool's behaviour is

@@ -8,8 +8,9 @@
 
 A simple, **security-hardened** [Model Context Protocol](https://modelcontextprotocol.io)
 (MCP) server that gives AI agents — [Claude Code](https://claude.com/claude-code),
-Hermes, or any MCP client — access to the [Perplexity](https://docs.perplexity.ai)
-Search, Sonar, and Responses-compatible Agent APIs.
+MiniMax Code, Hermes, or any MCP client — access to the
+[Perplexity](https://docs.perplexity.ai) Search, Sonar, and
+Responses-compatible Agent APIs.
 
 It follows a retrieval-first reference architecture (search and synthesis kept
 separate, citations validated against retrieval metadata) and applies the defensive
@@ -82,6 +83,35 @@ or in your MCP client config (`mcpServers`):
   }
 }
 ```
+
+### Register with MiniMax Code
+
+MiniMax Code keeps MCP servers in the current profile and manages them with its
+`mavis mcp` commands:
+
+```bash
+mavis mcp create \
+  --name perplexity \
+  --transport stdio \
+  --command uv \
+  --args '["--directory", "/abs/path/to/PerplexityAgent", "run", "perplexity-agent"]' \
+  --description "Perplexity Search/Sonar/Agent APIs (PerplexityAgent, stdio)."
+```
+
+`--args` takes a **JSON array**, not a shell-style list. Confirm it registered with
+`mavis mcp list`, and inspect the stored shape with `mavis mcp get perplexity`.
+
+**You can leave `PERPLEXITY_API_KEY` out of the registration entirely.** The key is
+read by the server from the repo's `.env` (see [`.env.example`](.env.example)), and
+`uv --directory` runs the server with the repo as its working directory, so the file
+is found without the secret ever being copied into a client config. That keeps the
+key in one gitignored place rather than duplicating it into every MCP client you
+register.
+
+If you do keep the server's CWD anywhere other than the repo root — invoking
+`.venv/bin/perplexity-agent` directly, for example — `.env` will *not* be found and
+the server will refuse to start. Either set the working directory to the repo root
+or pass `PERPLEXITY_API_KEY` through the registration's `env` field.
 
 ### Hermes
 
@@ -263,7 +293,7 @@ A claim whose URL was never seen in retrieval is downgraded to `low` confidence
 and listed in `validation_report.flagged` — `passed` is `false` if any claim is
 unsupported or cites an unknown URL.
 
-### From a Claude Code / agent prompt
+### From an agent prompt (Claude Code, MiniMax Code, …)
 
 You don't construct the JSON yourself — just ask, and the model picks the tool:
 

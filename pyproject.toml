@@ -1,7 +1,7 @@
 [project]
 name = "perplexity-agent"
 version = "0.3.1"
-description = "A simple, security-hardened MCP server exposing the Perplexity Search + Sonar APIs to AI agents (Claude Code, Hermes)."
+description = "A simple, security-hardened MCP server exposing the Perplexity Search + Sonar APIs to AI agents (Claude Code, MiniMax Code, Hermes)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
