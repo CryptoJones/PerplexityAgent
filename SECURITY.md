@@ -21,7 +21,7 @@ operating-system account the server runs under.
 
 | NSA recommendation | How PerplexityAgent implements it |
 | --- | --- |
-| **Choose supported MCP projects** | Built on the official `mcp` Python SDK (FastMCP). Dependencies are pinned and fully locked in `uv.lock`. |
+| **Choose supported MCP projects** | Built on the official `mcp` Python SDK (`MCPServer`). Dependencies are pinned and fully locked in `uv.lock`. |
 | **Design for boundaries / least privilege** | Default **stdio** transport runs locally with no network exposure. No shell execution, no filesystem writes (except an optional, explicitly-configured audit-log path). The API key lives only in the client layer and is **never** returned by a tool. Egress goes to `api.perplexity.ai`; the optional TUI and explicit `fetch_url` tool add an SSRF-guarded public-page fetcher (see below). |
 | **Validate parameters** | Every tool input is validated against a strict `pydantic` model (`schemas.py`) with bounded strings/arrays (including Agent input, model chains, domains, tools, and image payloads), numeric ranges (`max_results` 1–20, `max_steps` 1–10), and constrained enums. Unknown fields are rejected (`extra="forbid"`), preventing parameter smuggling. |
 | **Constrain & sandbox tool execution** | Per-request timeouts, a hard response-size cap, and capped retries with jittered backoff (`client.py`). Run the process under seccomp/AppArmor/SELinux or in a container for OS-level isolation (see below). |
@@ -78,13 +78,18 @@ space retains only the most-recent tabs (default 50, configurable). Conversation
 history is unbounded by default — it is never auto-deleted — but an operator can
 cap it with `PERPLEXITY_MAX_HISTORY_PER_SPACE`.
 
-Stored Agent response snapshots share this owner-only SQLite database. Each row is
-scoped to the originating MCP client session; a known response ID owned by another
-session is rejected before continuation or retrieval. Retention is bounded per
-session (default 100 snapshots). Automatic function chaining is opt-in and can
-invoke only server-operator-registered handlers. Function JSON
-schemas, arguments, outputs, and continuation rounds are all bounded; arbitrary
-Python supplied by an MCP caller is never evaluated.
+Stored Agent response snapshots share this owner-only SQLite database. Under the
+MCP revision 2026-07-28 stateless capability model, transport-level sessions are
+removed and cross-call state is addressed by server-minted capability handles passed
+as ordinary tool arguments. Stored response snapshots are indexed under a shared
+namespace (`_STORE_NAMESPACE = "shared"`), where possession of the unguessable
+`response_id` provides authorization for continuation or retrieval. Similarly,
+offloaded tool results are stashed behind unguessable 96-bit random capability tokens
+(`retrieve_key`) in a bounded in-memory store. Retention is bounded (default 100
+snapshots in the SQLite store, default 128 entries for offload cache). Automatic
+function chaining is opt-in and can invoke only server-operator-registered handlers.
+Function JSON schemas, arguments, outputs, and continuation rounds are all bounded;
+arbitrary Python supplied by an MCP caller is never evaluated.
 
 ## Secret handling
 

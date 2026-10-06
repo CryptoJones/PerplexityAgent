@@ -1,12 +1,52 @@
 # Code Review Backlog
 
-This document captures findings from a comprehensive code review of the PerplexityAgent
-codebase. Each finding is also tracked as a GitHub Issue. Issues are grouped by priority.
+This document captures findings from code reviews of the PerplexityAgent codebase.
+Each finding is also tracked as a GitHub Issue. Issues are grouped by priority.
+
+## Active Review Findings (2026-10-06)
+
+**Summary:** 201 tests pass (90.02% coverage, gate: 85%), ruff check clean, mypy strict clean, 0 security vulnerabilities.
+Tracked under GitHub issues #131–#135.
+
+### P2: Update SECURITY.md to reflect MCP 2026-07-28 stateless capability model
+- **Issue:** [#131](https://github.com/CryptoJones/PerplexityAgent/issues/131)
+- **File:** `SECURITY.md` (lines 81–83)
+- **Description:** Commit `daa358a` upgraded to the MCP `2026-07-28` stateless specification, eliminating transport-level sessions in favor of shared namespaces (`_STORE_NAMESPACE = "shared"`) where possession of capability tokens (`retrieve_key` or `response_id`) authorizes retrieval. `SECURITY.md` still describes legacy per-session scoping where requests from other sessions are rejected.
+- **Action:** Update `SECURITY.md` to reflect the stateless capability model accurately.
+- **Status:** Resolved
+
+### P3: Reformat codebase with ruff format and enforce in CI
+- **Issue:** [#132](https://github.com/CryptoJones/PerplexityAgent/issues/132)
+- **Files:** 11 files across `src/perplexity_agent/` and `tests/`
+- **Description:** Running `uv run ruff format --check` identifies 11 files with minor formatting drift (multi-line call/dict wrapping).
+- **Action:** Run `uv run ruff format` to normalize all files, and consider adding `uv run ruff format --check` to `.github/workflows/ci.yml`.
+
+### P3: Deprecate or remove unused Store.response_owner in memory.py
+- **Issue:** [#133](https://github.com/CryptoJones/PerplexityAgent/issues/133)
+- **File:** `src/perplexity_agent/memory.py` (lines 235–241)
+- **Description:** `Store.response_owner` was originally invoked to check session ownership before returning stored responses. With the transition to stateless capability handles in `server.py`, it is no longer called in `src/`.
+- **Action:** Deprecate or remove `response_owner` and note the transition.
+
+### P3: Update stale FastMCP comment in pyproject.toml
+- **Issue:** [#134](https://github.com/CryptoJones/PerplexityAgent/issues/134)
+- **File:** `pyproject.toml` (lines 74–77)
+- **Description:** A comment under `[tool.mypy.overrides]` still refers to `FastMCP` instead of `MCPServer`.
+- **Action:** Update the comment to reference `MCPServer`.
+
+### P3: Add .env.bak* to .gitignore
+- **Issue:** [#135](https://github.com/CryptoJones/PerplexityAgent/issues/135)
+- **File:** `.gitignore`
+- **Description:** Backup `.env` files (e.g. `.env.bak.1782075379`) are currently untracked, risking accidental secret leakage if committed.
+- **Action:** Add `.env.bak*` to `.gitignore`.
+
+---
+
+## Historical Review Findings (Resolved)
 
 **Status: resolved.** All findings and testing gaps are implemented with regression
 coverage; GitHub issues #86–#99 track the corresponding changes.
 
-## Summary
+### Summary
 
 - **200 tests pass**, **89.94% coverage** (gate: 85%), **ruff clean**, **mypy strict clean**
 - **0 critical vulnerabilities** found
