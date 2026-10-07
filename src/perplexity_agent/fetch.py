@@ -158,7 +158,7 @@ def extract_text(html: str) -> tuple[str, str]:
     optional parser isn't installed.
     """
     try:
-        from selectolax.parser import HTMLParser
+        from selectolax.lexbor import LexborHTMLParser as HTMLParser
     except ImportError:  # pragma: no cover - exercised only without the tui extra
         return _extract_text_fallback(html)
 
