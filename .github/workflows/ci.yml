@@ -32,6 +32,8 @@ jobs:
           enable-cache: true
       - run: uv python install ${{ matrix.python-version }}
       - run: uv sync --extra dev --extra tui --python ${{ matrix.python-version }}
+      - name: Ruff format
+        run: uv run ruff format --check .
       - name: Ruff lint
         run: uv run ruff check --output-format=github .
 

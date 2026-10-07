@@ -81,9 +81,7 @@ async def decompose_with_model(
                 {"role": "system", "content": _DECOMPOSE_SYSTEM},
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {"question": question, "max_subquestions": n}
-                    ),
+                    "content": json.dumps({"question": question, "max_subquestions": n}),
                 },
             ],
             model=model,

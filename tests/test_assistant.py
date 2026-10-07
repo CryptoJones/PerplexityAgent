@@ -82,8 +82,12 @@ async def test_summarize_page(settings):
 
 @respx.mock
 async def test_group_tabs_parses_schema(settings):
-    groups = {"groups": [{"name": "Shopping", "tab_indexes": [0, 1]},
-                         {"name": "News", "tab_indexes": [2]}]}
+    groups = {
+        "groups": [
+            {"name": "Shopping", "tab_indexes": [0, 1]},
+            {"name": "News", "tab_indexes": [2]},
+        ]
+    }
     respx.post("https://api.perplexity.ai/chat/completions").mock(
         return_value=httpx.Response(200, json=_chat(json.dumps(groups)))
     )

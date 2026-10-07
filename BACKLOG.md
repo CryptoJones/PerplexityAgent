@@ -20,6 +20,7 @@ Tracked under GitHub issues #131–#135.
 - **Files:** 11 files across `src/perplexity_agent/` and `tests/`
 - **Description:** Running `uv run ruff format --check` identifies 11 files with minor formatting drift (multi-line call/dict wrapping).
 - **Action:** Run `uv run ruff format` to normalize all files, and consider adding `uv run ruff format --check` to `.github/workflows/ci.yml`.
+- **Status:** Resolved
 
 ### P3: Deprecate or remove unused Store.response_owner in memory.py
 - **Issue:** [#133](https://github.com/CryptoJones/PerplexityAgent/issues/133)

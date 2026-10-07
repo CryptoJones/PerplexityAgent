@@ -39,6 +39,7 @@ def _capped(text: str) -> str:
     """
     return text[:_MAX_CONTEXT_CHARS]
 
+
 _ANSWER_SYSTEM = (
     "You are a concise research assistant inside a terminal browser. Answer the "
     "user's question grounded in any provided context and your own web access. "
@@ -115,9 +116,7 @@ class Assistant:
         messages: list[dict[str, str]] = [{"role": "system", "content": _ANSWER_SYSTEM}]
         if context:
             blob = "\n\n---\n\n".join(t.context_blob() for t in context)
-            messages.append(
-                {"role": "system", "content": f"Open tabs for context:\n{blob}"}
-            )
+            messages.append({"role": "system", "content": f"Open tabs for context:\n{blob}"})
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": question})
@@ -138,10 +137,7 @@ class Assistant:
 
     async def ask_page(self, page_text: str, question: str, title: str = "") -> Reply:
         """Answer a question about the current page (Comet's 'ask about this page')."""
-        user = (
-            f"Page title: {title}\n\nPage text:\n{_capped(page_text)}\n\n"
-            f"Question: {question}"
-        )
+        user = f"Page title: {title}\n\nPage text:\n{_capped(page_text)}\n\nQuestion: {question}"
         resp = await self._client.chat(
             [
                 {"role": "system", "content": _ANSWER_SYSTEM},
@@ -172,9 +168,7 @@ class Assistant:
         """Summarize or compare across all open tabs (Comet's 'chat with your tabs')."""
         if not tabs:
             return Reply(text="No open tabs to synthesize.")
-        blob = "\n\n---\n\n".join(
-            f"Tab {i + 1}: {t.context_blob()}" for i, t in enumerate(tabs)
-        )
+        blob = "\n\n---\n\n".join(f"Tab {i + 1}: {t.context_blob()}" for i, t in enumerate(tabs))
         task = question or "Summarize and compare these tabs into one concise overview."
         resp = await self._client.chat(
             [
@@ -192,9 +186,7 @@ class Assistant:
         """
         if not tabs:
             return []
-        listing = [
-            {"index": i, "title": t.title, "url": t.url} for i, t in enumerate(tabs)
-        ]
+        listing = [{"index": i, "title": t.title, "url": t.url} for i, t in enumerate(tabs)]
         resp = await self._client.chat(
             [
                 {

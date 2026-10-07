@@ -160,8 +160,7 @@ class Store:
 
     def history(self, *, space: str = "default", limit: int = 50) -> list[dict[str, str]]:
         rows = self._conn.execute(
-            "SELECT role, content FROM conversations WHERE space = ? "
-            "ORDER BY id DESC LIMIT ?",
+            "SELECT role, content FROM conversations WHERE space = ? ORDER BY id DESC LIMIT ?",
             (space, limit),
         ).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
@@ -169,9 +168,7 @@ class Store:
     # --- tabs --------------------------------------------------------------
     def save_tab(self, tab: StoredTab, *, now: float, space: str = "default") -> None:
         # Dedupe per (space, url): re-opening a page replaces the stored copy.
-        self._conn.execute(
-            "DELETE FROM tabs WHERE space = ? AND url = ?", (space, tab.url)
-        )
+        self._conn.execute("DELETE FROM tabs WHERE space = ? AND url = ?", (space, tab.url))
         self._conn.execute(
             "INSERT INTO tabs (space, title, url, kind, text, created) VALUES (?, ?, ?, ?, ?, ?)",
             (space, tab.title, tab.url, tab.kind, tab.text, now),
