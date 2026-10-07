@@ -43,24 +43,23 @@ app = FastAPI()
 PPLX_API_KEY = os.environ["PERPLEXITY_API_KEY"]
 PPLX_BASE = "https://api.perplexity.ai"
 
-client = httpx.AsyncClient(timeout=60.0, headers={
-    "Authorization": f"Bearer {PPLX_API_KEY}",
-    "Content-Type": "application/json"
-})
+client = httpx.AsyncClient(
+    timeout=60.0,
+    headers={"Authorization": f"Bearer {PPLX_API_KEY}", "Content-Type": "application/json"},
+)
+
 
 def cache_key(payload: dict) -> str:
     raw = json.dumps(payload, sort_keys=True).encode()
     return hashlib.sha256(raw).hexdigest()
 
+
 async def perplexity_search(query: str, max_results: int = 5) -> Dict[str, Any]:
-    payload = {
-        "query": query,
-        "max_results": max_results,
-        "max_tokens_per_page": 1024
-    }
+    payload = {"query": query, "max_results": max_results, "max_tokens_per_page": 1024}
     r = await client.post(f"{PPLX_BASE}/search", json=payload)
     r.raise_for_status()
     return r.json()
+
 
 async def sonar_synthesize(messages: List[Dict[str, str]], schema: dict) -> Dict[str, Any]:
     payload = {
@@ -68,15 +67,13 @@ async def sonar_synthesize(messages: List[Dict[str, str]], schema: dict) -> Dict
         "messages": messages,
         "response_format": {
             "type": "json_schema",
-            "json_schema": {
-                "name": "research_report",
-                "schema": schema
-            }
-        }
+            "json_schema": {"name": "research_report", "schema": schema},
+        },
     }
     r = await client.post(f"{PPLX_BASE}/chat/completions", json=payload)
     r.raise_for_status()
     return r.json()
+
 
 def dedupe_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
@@ -89,36 +86,29 @@ def dedupe_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             out.append(item)
     return out
 
+
 def build_schema() -> dict:
     return {
         "type": "object",
         "properties": {
             "answer": {"type": "string"},
-            "key_findings": {
-                "type": "array",
-                "items": {"type": "string"}
-            },
-            "open_questions": {
-                "type": "array",
-                "items": {"type": "string"}
-            },
+            "key_findings": {"type": "array", "items": {"type": "string"}},
+            "open_questions": {"type": "array", "items": {"type": "string"}},
             "claims": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
                         "claim": {"type": "string"},
-                        "supporting_urls": {
-                            "type": "array",
-                            "items": {"type": "string"}
-                        }
+                        "supporting_urls": {"type": "array", "items": {"type": "string"}},
                     },
-                    "required": ["claim", "supporting_urls"]
-                }
-            }
+                    "required": ["claim", "supporting_urls"],
+                },
+            },
         },
-        "required": ["answer", "key_findings", "open_questions", "claims"]
+        "required": ["answer", "key_findings", "open_questions", "claims"],
     }
+
 
 @app.post("/research")
 async def research(question: str):
@@ -126,7 +116,7 @@ async def research(question: str):
         question,
         f"{question} background",
         f"{question} latest developments",
-        f"{question} expert analysis"
+        f"{question} expert analysis",
     ]
 
     gathered = []
@@ -136,11 +126,7 @@ async def research(question: str):
 
     sources = dedupe_results(gathered)
     source_summary = [
-        {
-            "title": s.get("title"),
-            "url": s.get("url"),
-            "snippet": s.get("snippet")
-        }
+        {"title": s.get("title"), "url": s.get("url"), "snippet": s.get("snippet")}
         for s in sources[:20]
     ]
 
@@ -153,24 +139,14 @@ async def research(question: str):
                 "Use the provided sources only. "
                 "Return valid JSON matching the schema. "
                 "List unresolved gaps when evidence is weak."
-            )
+            ),
         },
-        {
-            "role": "user",
-            "content": json.dumps({
-                "question": question,
-                "sources": source_summary
-            })
-        }
+        {"role": "user", "content": json.dumps({"question": question, "sources": source_summary})},
     ]
 
     synthesis = await sonar_synthesize(messages, schema)
 
-    return {
-        "question": question,
-        "sources": source_summary,
-        "synthesis": synthesis
-    }
+    return {"question": question, "sources": source_summary, "synthesis": synthesis}
 ```
 
 ## Best practices
