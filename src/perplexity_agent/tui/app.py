@@ -79,16 +79,12 @@ class CometApp(App[None]):
         self._fetcher = PageFetcher(self._settings)
         self._store = Store.from_settings(self._settings)
         self._assistant = Assistant(self._client)
-        self._bucket = TokenBucket(
-            self._settings.rate_per_minute, self._settings.rate_burst
-        )
+        self._bucket = TokenBucket(self._settings.rate_per_minute, self._settings.rate_burst)
         self._audit = AuditLogger(self._settings.audit_log_path)
         # One gate (rate limit + audit) shared by interactive commands and the
         # background monitor tasks, so neither path can skip either control.
         self._guard = RequestGuard(self._bucket, self._audit)
-        self._tasks = TaskManager(
-            self._assistant, self._fetcher, self._notify, guard=self._guard
-        )
+        self._tasks = TaskManager(self._assistant, self._fetcher, self._notify, guard=self._guard)
         self._space = "default"
         self._open_tabs: list[Tab] = []
         self._current: Tab | None = None
@@ -222,8 +218,10 @@ class CometApp(App[None]):
             raise results
         if isinstance(reply, BaseException):
             raise reply
-        lines = [f"{i + 1}. [{r.get('title') or r.get('url')}]({r.get('url')})"
-                 for i, r in enumerate(results)]
+        lines = [
+            f"{i + 1}. [{r.get('title') or r.get('url')}]({r.get('url')})"
+            for i, r in enumerate(results)
+        ]
         self._content().write(Markdown("\n".join(lines) or "_No results._"))
         self._write_reply(self._content(), reply)
 
@@ -253,9 +251,7 @@ class CometApp(App[None]):
 
     async def _cmd_summary(self, _rest: str) -> None:
         if self._current is not None:
-            reply = await self._assistant.summarize_page(
-                self._current.text, self._current.title
-            )
+            reply = await self._assistant.summarize_page(self._current.text, self._current.title)
         else:
             reply = await self._assistant.synthesize_tabs(self._open_tabs)
         self._write_reply(self._content(), reply)
@@ -264,8 +260,9 @@ class CometApp(App[None]):
         if not self._open_tabs:
             self._content().write("_No open tabs._")
             return
-        lines = [f"{i + 1}. [{t.title}]({t.url}) — _{t.kind}_"
-                 for i, t in enumerate(self._open_tabs)]
+        lines = [
+            f"{i + 1}. [{t.title}]({t.url}) — _{t.kind}_" for i, t in enumerate(self._open_tabs)
+        ]
         self._content().write(Markdown("\n".join(lines)))
 
     async def _cmd_group(self, _rest: str) -> None:
@@ -291,8 +288,7 @@ class CometApp(App[None]):
             md.append("\n**Key findings**")
             md += [f"- {f}" for f in report["key_findings"]]
         vr = result["validation_report"]
-        md.append(f"\n_citations validated: {vr['passed']} "
-                  f"({vr['total_claims']} claims)_")
+        md.append(f"\n_citations validated: {vr['passed']} ({vr['total_claims']} claims)_")
         self._content().write(Markdown("\n".join(md)))
 
     async def _cmd_translate(self, rest: str) -> None:
@@ -306,10 +302,13 @@ class CometApp(App[None]):
     async def _cmd_space(self, rest: str) -> None:
         if not rest:
             spaces = self._store.spaces()
-            self._content().write(Markdown(
-                "**Spaces:** " + ", ".join(f"`{s}`" for s in spaces)
-                + f"\n\nCurrent: `{self._space}`"
-            ))
+            self._content().write(
+                Markdown(
+                    "**Spaces:** "
+                    + ", ".join(f"`{s}`" for s in spaces)
+                    + f"\n\nCurrent: `{self._space}`"
+                )
+            )
             return
         self._space = rest
         self._store.create_space(rest, now=time.time())

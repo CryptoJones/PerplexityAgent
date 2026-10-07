@@ -112,9 +112,7 @@ async def test_offload_retrieval_is_authorized_by_possession_of_the_key():
     # from the key being unguessable — a caller who never received it cannot
     # fabricate it.
     big = {"results": [{"url": f"https://a.com/{i}", "blob": "x" * 100} for i in range(50)]}
-    respx.post("https://api.perplexity.ai/search").mock(
-        return_value=httpx.Response(200, json=big)
-    )
+    respx.post("https://api.perplexity.ai/search").mock(return_value=httpx.Response(200, json=big))
     settings = Settings(
         api_key=SecretStr("pplx-testkey1234567890"),
         max_retries=0,
@@ -132,9 +130,7 @@ async def test_offload_retrieval_is_authorized_by_possession_of_the_key():
             restored = json.loads(_text(await holder.call_tool("retrieve", {"key": key})))
         # A caller who never received the key cannot guess a valid one.
         async with Client(mcp) as stranger:
-            forged = json.loads(
-                _text(await stranger.call_tool("retrieve", {"key": "0" * 24}))
-            )
+            forged = json.loads(_text(await stranger.call_tool("retrieve", {"key": "0" * 24})))
     assert "https://a.com/0" in restored["content"]
     assert "error" in forged
 
@@ -519,9 +515,7 @@ async def test_deep_research_full_pipeline_with_model_decomposition():
             httpx.Response(
                 200,
                 json={
-                    "choices": [
-                        {"message": {"content": json.dumps({"subquestions": ["angle"]})}}
-                    ]
+                    "choices": [{"message": {"content": json.dumps({"subquestions": ["angle"]})}}]
                 },
             ),
             httpx.Response(

@@ -70,7 +70,8 @@ async def test_open_creates_tab(tui_settings, monkeypatch):
     import perplexity_agent.fetch as fetch_mod
 
     monkeypatch.setattr(
-        fetch_mod.socket, "getaddrinfo",
+        fetch_mod.socket,
+        "getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))],
     )
     app = CometApp(tui_settings)
@@ -103,7 +104,8 @@ def _patch_public_dns(monkeypatch):
     import perplexity_agent.fetch as fetch_mod
 
     monkeypatch.setattr(
-        fetch_mod.socket, "getaddrinfo",
+        fetch_mod.socket,
+        "getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 0))],
     )
 
@@ -185,9 +187,7 @@ async def test_research_command(tui_settings):
         "answer": "the answer",
         "key_findings": ["finding one"],
         "open_questions": [],
-        "claims": [
-            {"claim": "c", "supporting_urls": ["https://a.com"], "confidence": "high"}
-        ],
+        "claims": [{"claim": "c", "supporting_urls": ["https://a.com"], "confidence": "high"}],
     }
     app = CometApp(tui_settings)
     with respx.mock:

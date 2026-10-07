@@ -143,8 +143,7 @@ class AuditLogger:
             logger.setLevel(logging.INFO)
             logger.propagate = False
             if not any(
-                getattr(handler, "_perplexity_audit_stderr", False)
-                for handler in logger.handlers
+                getattr(handler, "_perplexity_audit_stderr", False) for handler in logger.handlers
             ):
                 handler = logging.StreamHandler(sys.stderr)
                 handler.setFormatter(logging.Formatter("%(message)s"))

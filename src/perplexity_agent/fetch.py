@@ -53,9 +53,7 @@ _TEXTUAL_MIME_EXACT = frozenset({"application/xml", "application/json", "applica
 
 def _is_textual_mime(mime: str) -> bool:
     return (
-        mime.startswith("text/")
-        or mime in _TEXTUAL_MIME_EXACT
-        or mime.endswith(("+xml", "+json"))
+        mime.startswith("text/") or mime in _TEXTUAL_MIME_EXACT or mime.endswith(("+xml", "+json"))
     )
 
 
@@ -107,9 +105,7 @@ async def _assert_host_allowed(host: str, *, allow_private: bool) -> str:
     if not host:
         raise FetchError("URL has no host.")
     try:
-        infos = await asyncio.to_thread(
-            socket.getaddrinfo, host, None, proto=socket.IPPROTO_TCP
-        )
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise FetchError(f"Could not resolve host {host!r}: {exc}") from exc
 
@@ -131,9 +127,7 @@ async def _validate_url(url: str, *, allow_private: bool) -> str:
     """Validate scheme + host of ``url``; return the validated IP to pin to."""
     parts = urlsplit(url)
     if parts.scheme.lower() not in _ALLOWED_SCHEMES:
-        raise FetchError(
-            f"Refusing to fetch scheme {parts.scheme!r}; only http/https are allowed."
-        )
+        raise FetchError(f"Refusing to fetch scheme {parts.scheme!r}; only http/https are allowed.")
     return await _assert_host_allowed(parts.hostname or "", allow_private=allow_private)
 
 
@@ -185,7 +179,7 @@ def _extract_text_fallback(html: str) -> tuple[str, str]:
     import re
 
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
-    title = (title_match.group(1).strip() if title_match else "")
+    title = title_match.group(1).strip() if title_match else ""
     stripped = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
     stripped = re.sub(r"<[^>]+>", " ", stripped)
     text = " ".join(stripped.split())
@@ -237,9 +231,7 @@ class PageFetcher:
                     raise FetchError(f"Fetch failed: HTTP {resp.status_code} for {current!r}.")
                 mime = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
                 if mime and not _is_textual_mime(mime):
-                    raise FetchError(
-                        f"Refusing non-text content-type {mime!r} for {current!r}."
-                    )
+                    raise FetchError(f"Refusing non-text content-type {mime!r} for {current!r}.")
                 body = await self._read_capped(resp)
 
             html = body.decode(resp.charset_encoding or "utf-8", errors="replace")

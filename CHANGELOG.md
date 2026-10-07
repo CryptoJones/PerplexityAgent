@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-06
+
+### Changed
+
+- Reformat codebase with `ruff format` and enforce formatting in CI lint workflow (#132).
+
 ## [0.4.0] - 2026-10-06
 
 ### Changed
@@ -233,7 +239,8 @@ validate citations) over stdio, with an optional bearer-token HTTP transport.
 Strict pydantic input validation, token-bucket rate limiting, redacting JSON
 audit log, and CI (ruff, pytest, pip-audit, gitleaks, CodeQL).
 
-[Unreleased]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.4.0...HEAD
+[Unreleased]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.4.1...HEAD
+[0.4.1]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.4.0...v0.4.1
 [0.4.0]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.3.1...v0.4.0
 [0.3.1]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.3.0...v0.3.1
 [0.3.0]: https://codeberg.org/CryptoJones/PerplexityAgent/compare/v0.2.0...v0.3.0

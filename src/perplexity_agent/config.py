@@ -65,8 +65,7 @@ class Settings(BaseSettings):
     # SSRF controls live in fetch.py; these knobs tune them. Private/loopback/
     # link-local targets are denied by default (fetch_allow_private=False).
     fetch_user_agent: str = (
-        f"PerplexityAgent-TUI/{__version__} "
-        "(+https://codeberg.org/CryptoJones/PerplexityAgent)"
+        f"PerplexityAgent-TUI/{__version__} (+https://codeberg.org/CryptoJones/PerplexityAgent)"
     )
     fetch_allow_private: bool = False
     # Where the TUI keeps its sqlite store (history, tabs, spaces). None ->
