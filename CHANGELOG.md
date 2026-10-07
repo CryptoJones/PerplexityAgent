@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- Deprecate unused `Store.response_owner()` in `memory.py` with `DeprecationWarning` following the MCP 2026-07-28 stateless capability model migration (#133).
+
+### Documentation
+
+- Update stale `FastMCP` reference to `MCPServer` in `pyproject.toml` mypy configuration comment (#134).
+
+### Fixed
+
+- Ignore `.env.bak*` files in `.gitignore` to prevent secret leakage from backup environment files (#135).
+
 ## [0.4.2] - 2026-10-06
 
 ### Fixed

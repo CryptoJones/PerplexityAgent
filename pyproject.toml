@@ -71,7 +71,7 @@ exclude_lines = [
 python_version = "3.11"
 strict = true
 
-# FastMCP only recognizes a tool's Context parameter when it's annotated as the
+# MCPServer only recognizes a tool's Context parameter when it's annotated as the
 # bare `Context` — its find_context_parameter() ignores `Context[...]` generic
 # args, so parameterizing it (to satisfy disallow_any_generics) would silently
 # break context injection. server.py keeps the bare form; relax that one flag here.
