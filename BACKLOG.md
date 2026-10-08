@@ -27,18 +27,21 @@ Tracked under GitHub issues #131–#135.
 - **File:** `src/perplexity_agent/memory.py` (lines 235–241)
 - **Description:** `Store.response_owner` was originally invoked to check session ownership before returning stored responses. With the transition to stateless capability handles in `server.py`, it is no longer called in `src/`.
 - **Action:** Deprecate or remove `response_owner` and note the transition.
+- **Status:** Resolved
 
 ### P3: Update stale FastMCP comment in pyproject.toml
 - **Issue:** [#134](https://github.com/CryptoJones/PerplexityAgent/issues/134)
 - **File:** `pyproject.toml` (lines 74–77)
 - **Description:** A comment under `[tool.mypy.overrides]` still refers to `FastMCP` instead of `MCPServer`.
 - **Action:** Update the comment to reference `MCPServer`.
+- **Status:** Resolved
 
 ### P3: Add .env.bak* to .gitignore
 - **Issue:** [#135](https://github.com/CryptoJones/PerplexityAgent/issues/135)
 - **File:** `.gitignore`
 - **Description:** Backup `.env` files (e.g. `.env.bak.1782075379`) are currently untracked, risking accidental secret leakage if committed.
 - **Action:** Add `.env.bak*` to `.gitignore`.
+- **Status:** Resolved
 
 ---
 

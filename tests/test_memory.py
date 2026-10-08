@@ -1,3 +1,4 @@
+import pytest
 from pydantic import SecretStr
 
 from perplexity_agent.config import Settings
@@ -172,7 +173,8 @@ def test_agent_response_round_trip_is_session_scoped(tmp_path):
     s.save_response("resp_1", payload, session_id="session-a", now=1.0)
     assert s.response("resp_1", session_id="session-a") == payload
     assert s.response("resp_1", session_id="session-b") is None
-    assert s.response_owner("resp_1") == "session-a"
+    with pytest.deprecated_call():
+        assert s.response_owner("resp_1") == "session-a"
     s.close()
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -230,6 +231,19 @@ class Store:
         return value if isinstance(value, dict) else None
 
     def response_owner(self, response_id: str) -> str | None:
+        """Return the session_id that owns an agent response, or None.
+
+        .. deprecated:: 0.4.3
+            Deprecated since the MCP 2026-07-28 stateless capability model migration.
+            Response access is authorized by possession of capability handles under a
+            shared namespace rather than per-session ownership verification.
+        """
+        warnings.warn(
+            "Store.response_owner is deprecated since the MCP 2026-07-28 stateless capability "
+            "model migration and will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         row = self._conn.execute(
             "SELECT session_id FROM agent_responses WHERE response_id = ? LIMIT 1",
             (response_id,),
